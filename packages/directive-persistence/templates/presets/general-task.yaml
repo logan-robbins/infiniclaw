@@ -1,0 +1,39 @@
+# Preset: general-task
+# Use when: task has fuzzy success criteria that typed verifiers cannot cleanly express.
+# Examples: HCAST general-reasoning, research writeups, qualitative analyses.
+# Always use `llm_judge` with a task-specific rubric authored at decomposition time.
+
+preset: general-task
+description: |
+  Sub-agent produces an artifact whose quality must be judged against a
+  written rubric rather than a mechanical check. Uses llm_judge as the
+  primary verifier; typed verifiers supplement where they apply.
+
+suggested_turn_budget:
+  min: 30
+  typical: 60
+  max: 100
+  warn_at_pct: 0.75
+  escalate_at_pct: 0.95
+
+default_dod:
+  - type: file_exists
+    path: __OUTPUT_PATH__
+  - type: llm_judge
+    rubric_path: __RUBRIC_PATH__
+    inputs:
+      - artifact: __OUTPUT_PATH__
+      - task_spec: ./DIRECTIVES.md   # the DIRECTIVES' GOAL + OUTPUT CONTRACT
+    min_score: 4.0                    # on a 5-point scale
+    judge_model: __JUDGE_MODEL__      # typically a smaller/cheaper model than the doer
+    seed: 42                          # reproducibility across re-verification
+
+default_constraints:
+  - Rubric must exist and be readable at __RUBRIC_PATH__ before you begin.
+    If absent, report BLOCKED with classification=input-missing.
+  - Output must be self-contained (no external references that resolve
+    only in the agent's workspace).
+  - If the llm_judge score is below min_score, the step stays IN_PROGRESS.
+    Read the judge's rationale (in .agent-events.jsonl AGENT:VERIFIER_RUN
+    payload — wait, you can't; the parent can) and ask parent for guidance
+    via BLOCKED if the rationale is unclear.

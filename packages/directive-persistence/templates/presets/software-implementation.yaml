@@ -1,0 +1,40 @@
+# Preset: software-implementation
+# Use when: sub-task's primary output is a new file under src/, tests/, or similar.
+# Do NOT use when: primary output is a .md analysis, a CSV submission, or a diff to an existing file (use the matching preset instead).
+
+preset: software-implementation
+description: |
+  Sub-agent produces a new implementation file. Typed verifiers check
+  existence, type-checking, test-passing, and absence of known-bad markers
+  (TODO, FIXME, hardcoded secrets).
+
+suggested_turn_budget:
+  min: 40
+  typical: 80
+  max: 120
+  warn_at_pct: 0.75
+  escalate_at_pct: 0.95
+
+default_dod:
+  - type: file_exists
+    path: __OUTPUT_PATH__
+  - type: shell_exit_zero
+    cmd: "npx tsc --noEmit -p tsconfig.json"
+    timeout_s: 120
+  - type: grep_present
+    path: __OUTPUT_PATH__
+    pattern: "__REQUIRED_EXPORT_REGEX__"
+  - type: grep_absent
+    path: __OUTPUT_PATH__
+    pattern: "TODO|FIXME|XXX|console\\.log|password\\s*=\\s*['\"]|api[_-]?key\\s*=\\s*['\"]"
+  - type: test_passes
+    cmd: "__TEST_CMD__"
+    timeout_s: 300
+
+default_constraints:
+  - No hardcoded secrets, tokens, or credentials in any new file.
+  - No TODO/FIXME/XXX comments in output files.
+  - No console.log or debug prints in sealed code.
+  - Tests must exist for every new exported function; if stage spec lacks
+    a test path, report BLOCKED with classification=contract-dispute.
+  - No new runtime dependencies without parent approval (BLOCKED).
