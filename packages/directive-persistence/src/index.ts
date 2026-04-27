@@ -5,9 +5,14 @@ import { buildLiveStateInjection } from "./directives/inject.js";
 import { snapshotJournal } from "./directives/snapshot.js";
 import { appendEvent } from "./events/log.js";
 import { fileExists } from "./fs/atomic.js";
+import {
+  capturePreTurnSnapshot,
+  drainNudges,
+  runAfterTurn,
+} from "./supervision/done-revert.js";
 
 export const PLUGIN_NAME = "directive-persistence";
-export const PLUGIN_VERSION = "0.2.0-phase2";
+export const PLUGIN_VERSION = "0.3.0-phase5";
 
 export type PluginHookAgentContext = {
   sessionId: string;
@@ -50,6 +55,7 @@ export function register(sdk?: PluginSdk): void {
   on("before_prompt_build", beforePromptBuild);
   on("before_compaction", beforeCompaction);
   on("after_compaction", afterCompaction);
+  on("after_turn", afterTurn);
 }
 
 export async function beforePromptBuild(
@@ -60,7 +66,27 @@ export async function beforePromptBuild(
   if (!(await fileExists(journalPath))) return {};
 
   const journal = await readJournal(journalPath);
-  return { prependSystemContext: buildLiveStateInjection(journal) };
+
+  // Capture pre-turn snapshot for the DONE-revert validator (§ 10.3b).
+  capturePreTurnSnapshot(ctx.sessionKey, journal);
+
+  const nudges = drainNudges(ctx.sessionKey);
+  const liveState = buildLiveStateInjection(journal);
+  const prependSystemContext =
+    nudges.length > 0 ? `${nudges.join("\n\n")}\n\n${liveState}` : liveState;
+
+  return { prependSystemContext };
+}
+
+export async function afterTurn(
+  _event: unknown,
+  ctx: PluginHookAgentContext,
+): Promise<void> {
+  await runAfterTurn({
+    sessionKey: ctx.sessionKey,
+    agentId: ctx.agentId,
+    workspaceDir: ctx.workspaceDir,
+  });
 }
 
 export async function beforeCompaction(
@@ -115,6 +141,7 @@ export default {
   id: PLUGIN_NAME,
   name: "Directive Persistence",
   version: PLUGIN_VERSION,
-  description: "DIRECTIVES/JOURNAL split and cache-aware live-state injection for long-horizon agents.",
+  description:
+    "DIRECTIVES/JOURNAL split, cache-aware live-state injection, and DONE-revert authority for long-horizon agents.",
   register,
 };

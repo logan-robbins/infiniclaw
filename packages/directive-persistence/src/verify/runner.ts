@@ -27,6 +27,7 @@ export type RunAllDoDResult = {
 export type VerifierRunContext = VerifierContext & {
   agent?: string;
   session?: string;
+  turnNo?: number;
 };
 
 type FailureCounter = {
@@ -165,6 +166,7 @@ export async function runDoDForStep(
     verifierRunId,
     dodHash,
     failures,
+    turnNo: ctx.turnNo,
   };
   recordVerifierRun(record);
 

@@ -200,6 +200,7 @@ export const journalSchema = z.object({
 });
 
 export const planSchema = z.object({
+  title: z.string().min(1),
   schemaVersion: z.number().int().positive(),
   created: z.string().min(1),
   lastReplanned: z.string().min(1),
@@ -207,15 +208,63 @@ export const planSchema = z.object({
   owner: z.string().min(1),
   turnBudgetTotal: z.number().int().nonnegative(),
   costBudgetUsd: z.number().nonnegative(),
+  goal: z.string().min(1),
+  highLevelDefinitionOfDone: z.array(verifierSchema),
+  stages: z.array(
+    z.object({
+      ordinal: z.number().int().positive(),
+      id: z.string().min(1),
+      status: z.enum(["PENDING", "ACTIVE", "SEALED", "ABANDONED"]),
+      depends: z.array(z.string()),
+      seal: z.string().optional(),
+      out: z.string().optional(),
+    }),
+  ),
+  sealedOutputsRegistry: z.array(z.string()),
+  globalConstraints: z.array(z.string()),
+  notes: z.string(),
+  raw: z.string(),
+});
+
+export const stageDependencySchema = z.object({
+  service: z.string().min(1),
+  requiredSections: z.array(z.string()).optional(),
+});
+
+export const stageOutputSchema = z.object({
+  kind: z.string().min(1),
+  path: z.string().min(1),
+  exports: z.array(z.string()).optional(),
+  interface: z.string().optional(),
+});
+
+export const stageSubTaskSchema = z.object({
+  key: z.string().min(1),
+  id: z.string().min(1),
+  goal: z.string().min(1),
+  inputContract: z.array(contractEntrySchema),
+  outputContract: z.array(contractEntrySchema),
+  canStart: z.string().min(1).optional(),
+  turnBudget: z.number().int().nonnegative().optional(),
+  preset: z.string().min(1).optional(),
 });
 
 export const stageSchema = z.object({
+  title: z.string().min(1),
   schemaVersion: z.number().int().positive(),
   status: z.enum(["PENDING", "ACTIVE", "SEALED", "ABANDONED"]),
   created: z.string().min(1),
   activated: z.string().nullable(),
   sealed: z.string().nullable(),
   turnBudget: z.number().int().nonnegative(),
+  dependsOn: z.array(stageDependencySchema),
+  outputContract: z.array(stageOutputSchema),
+  definitionOfDone: z.array(verifierSchema),
+  subTasks: z.array(stageSubTaskSchema),
+  contextForSubAgents: z.array(z.string()),
+  executionLog: z.array(z.string()),
+  sealedSummary: z.string(),
+  raw: z.string(),
 });
 
 export const inventoryEntrySchema = z.object({
@@ -244,4 +293,10 @@ export type Directives = z.infer<typeof directivesSchema>;
 export type Journal = z.infer<typeof journalSchema>;
 export type JournalStep = z.infer<typeof journalStepSchema>;
 export type JournalStepStatus = z.infer<typeof journalStepStatusSchema>;
+export type Plan = z.infer<typeof planSchema>;
+export type PlanStage = Plan["stages"][number];
+export type StageFile = z.infer<typeof stageSchema>;
+export type StageOutput = z.infer<typeof stageOutputSchema>;
+export type Inventory = z.infer<typeof inventorySchema>;
+export type InventoryEntry = z.infer<typeof inventoryEntrySchema>;
 export type AgentEvent = z.infer<typeof eventSchema>;

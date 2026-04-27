@@ -7,6 +7,7 @@ export type VerifierRunRecord = {
   verifierRunId: string;
   dodHash: string;
   failures: string[];
+  turnNo?: number;
 };
 
 const latestRuns = new Map<string, VerifierRunRecord>();
@@ -28,6 +29,13 @@ export function getLatestPass(
 ): VerifierRunRecord | undefined {
   const record = getLatestVerifierRun(agent, stepId);
   return record?.allPass ? record : undefined;
+}
+
+export function getPassByRunId(verifierRunId: string): VerifierRunRecord | undefined {
+  for (const record of latestRuns.values()) {
+    if (record.verifierRunId === verifierRunId && record.allPass) return record;
+  }
+  return undefined;
 }
 
 export function clearVerifierRun(agent: string, stepId: string): void {

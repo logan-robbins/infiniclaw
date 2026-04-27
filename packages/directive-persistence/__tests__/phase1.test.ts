@@ -140,6 +140,7 @@ describe("Phase 1 foundation", () => {
       "before_prompt_build",
       "before_compaction",
       "after_compaction",
+      "after_turn",
     ]);
 
     const dir = await tempDir();
