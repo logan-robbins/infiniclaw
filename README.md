@@ -17,15 +17,15 @@ A plugin for OpenClaw that lets an agent (or a tree of agents) work on tasks tha
 - **Over-planning** ("the agent plans for a week and ships nothing")
 - **DRY violations** across parallel sub-agents rebuilding the same utilities
 
-It fixes these by putting the agent's contract and state on disk, re-injecting them every turn, mechanically verifying every "done" claim, and keeping a global service registry that every agent consults before writing anything.
+It fixes these by putting the agent's contract and state on disk, re-injecting them every turn, mechanically verifying every "done" claim, and keeping a global inventory that every agent consults before writing anything.
 
 ## Three ideas load-bearing the whole design
 
-1. **Disk is memory; context is scratch.** Each agent has `DIRECTIVES.md` (immutable contract, chmod 0444, lives in the cached system prompt) and `JOURNAL.md` (mutable tracker, re-read every turn, injected after the cache boundary). The context window is disposable. Compression is a recoverable non-event.
+1. **Disk is memory; context is scratch.** Each agent has `DIRECTIVES.md` (write-once contract, lives in the cached system prompt) and `JOURNAL.md` (mutable tracker, re-read every turn, injected after the cache boundary). The system prompt is byte-stable for the agent's lifetime — adding a new turn never invalidates the cache. The context window is disposable. Compression is a recoverable non-event.
 
 2. **Verifier authority, not self-report.** Thirteen typed verifier types — from `shell_exit_zero` to `test_passes` to `llm_judge` — are the only path to marking a step `DONE`. Authority lives in the plugin's JavaScript heap (the `verifierPasses` map), unreachable from any agent bash, `fs.writeFile`, or `chmod` escape hatch. A post-turn validator reverts any forged `DONE` transitions.
 
-3. **Black-box service registry.** Every sealed output publishes to `SERVICES.md`. Every agent consults it before writing a new file. DRY across parallel sub-agents becomes a structural impossibility, not a best-effort convention.
+3. **Black-box inventory.** Every sealed output publishes to `INVENTORY.md`. Every agent consults it before writing a new file. DRY across parallel sub-agents becomes a structural impossibility, not a best-effort convention.
 
 ## Benchmark target
 

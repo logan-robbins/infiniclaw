@@ -16,14 +16,13 @@ coverage/
 .plugin-state/
 .agent-events.jsonl
 .agent-events.*.jsonl
-.directives-lock.json
 
 # Per-agent working files — project-specific, not library source
 /PLAN.md
 /DIRECTIVES.md
 /JOURNAL.md
-/SERVICES.md
-/services/
+/INVENTORY.md
+/inventory/
 /project-plan/
 
 # Editor / OS

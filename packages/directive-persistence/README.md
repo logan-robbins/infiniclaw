@@ -19,7 +19,7 @@ src/
   directives/         # DIRECTIVES/JOURNAL schema, parse, atomic write
   verify/             # runner + 13 verifier types + pass-registry
   spawn/              # child DIRECTIVES writer + atomic lock
-  services/           # SERVICES.md registry operations
+  inventory/          # INVENTORY.md registry operations
   plan/               # PLAN.md + stage file operations + sealing
   events/             # .agent-events.jsonl writer + stuck detector
 templates/

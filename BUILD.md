@@ -5,13 +5,13 @@
 **Date (revised):** 2026-04-16
 **Target runtime:** OpenClaw 2026 (`pi-embedded-runner`, plugin SDK hooks, Claude 4.7 + 1h prompt cache)
 
-This document is the authoritative specification for the persistent directive system. It describes the full architecture: invariants, file schemas, hook infrastructure, prompt-cache coexistence, plan decomposition, sub-agent recursion, service registry for DRY prevention, verifier contract, compression event log, stuck detection, and implementation roadmap. Read it end to end before touching any code — every section is load-bearing.
+This document is the authoritative specification for the persistent directive system. It describes the full architecture: invariants, file schemas, hook infrastructure, prompt-cache coexistence, plan decomposition, sub-agent recursion, inventory for DRY prevention, verifier contract, compression event log, stuck detection, and implementation roadmap. Read it end to end before touching any code — every section is load-bearing.
 
 ---
 
 ## 0. Why this exists (the one-paragraph version)
 
-Long-horizon agent work fails in four specific ways: (1) **amnesia** — context compression deletes operational state and the agent must re-derive it from lossy summaries; (2) **early stopping** — a step that is *kinda* done gets marked done, downstream builds on a cracked foundation; (3) **over-planning** — agents burn days "planning" with no artifacts; (4) **DRY violations** — one sub-agent rebuilds what another sub-agent already sealed because it has no way to discover what exists. This system fixes all four by externalizing state to disk, re-injecting it every turn, verifying every DoD criterion mechanically before advancement, and maintaining a global **Service Registry** that every agent consults before writing a single new file. The agent is never allowed to stop early, never allowed to skip a hard step, and never allowed to rebuild what's already sealed.
+Long-horizon agent work fails in four specific ways: (1) **amnesia** — context compression deletes operational state and the agent must re-derive it from lossy summaries; (2) **early stopping** — a step that is *kinda* done gets marked done, downstream builds on a cracked foundation; (3) **over-planning** — agents burn days "planning" with no artifacts; (4) **DRY violations** — one sub-agent rebuilds what another sub-agent already sealed because it has no way to discover what exists. This system fixes all four by externalizing state to disk, re-injecting it every turn, verifying every DoD criterion mechanically before advancement, and maintaining a global **Inventory** that every agent consults before writing a single new file. The agent is never allowed to stop early, never allowed to skip a hard step, and never allowed to rebuild what's already sealed.
 
 ---
 
@@ -27,7 +27,7 @@ Current LLM agents lose operational state on every compression. At ~256K+ tokens
 Agents asked to "plan" unconstrained will happily spend a week refining the plan instead of producing artifacts. The fix is a hard rule: planning is a numbered step with its own DoD and a tight turn budget, and it produces concrete stage files on disk — not a discussion.
 
 ### 1.4 DRY violations
-Three sub-agents spawned in parallel will happily implement the same utility three times, because each agent only sees its own DIRECTIVES.md. The fix is a global **Service Registry** (`SERVICES.md`) that every agent must consult (and every sealed output must publish to) before implementing anything. The registry is the single source of truth for "what is already built and how do I call it."
+Three sub-agents spawned in parallel will happily implement the same utility three times, because each agent only sees its own DIRECTIVES.md. The fix is a global **Inventory** (`INVENTORY.md`) that every agent must consult (and every sealed output must publish to) before implementing anything. The registry is the single source of truth for "what is already built and how do I call it."
 
 ### 1.5 The root cause (one sentence)
 **Disk does not compress.** Files survive reboots, image upgrades, context windows, and model swaps. The agent cannot forget what is written in a file it reads every single turn. This system makes disk the agent's memory and the context window disposable.
@@ -38,20 +38,20 @@ Three sub-agents spawned in parallel will happily implement the same utility thr
 
 These are non-negotiable. Any code or schema that contradicts one of these is a bug, not a tradeoff.
 
-1. **Disk is memory; context is scratch.** Operational state lives in `DIRECTIVES.md` (contract), `JOURNAL.md` (live tracker), `PLAN.md`, stage files, and `SERVICES.md`. The context window is just what the model needs for the current turn.
-2. **Contract and tracker are separate files.** `DIRECTIVES.md` is what the agent *must do* — written once by the parent at spawn, truly immutable for the agent's lifetime, file-system-enforced read-only. `JOURNAL.md` is what the agent *is doing right now* — the only file the agent writes. This separation is what makes the cache story trivial (§ 13).
+1. **Disk is memory; context is scratch.** Operational state lives in `DIRECTIVES.md` (contract), `JOURNAL.md` (live tracker), `PLAN.md`, stage files, and `INVENTORY.md`. The context window is just what the model needs for the current turn.
+2. **Contract and tracker are separate files.** `DIRECTIVES.md` is what the agent *must do* — written once by the parent at spawn; the writer refuses to overwrite an existing file, and the agent's PROTOCOL forbids modification. `JOURNAL.md` is what the agent *is doing right now* — the only file the agent writes. This separation is what makes the cache story trivial (§ 13).
 3. **Every turn re-injects live state.** `before_prompt_build` reads `JOURNAL.md` and injects a tiny status summary as `prependSystemContext`. The DIRECTIVES content lives in the cached system prompt and is not re-injected — the agent already has it.
 4. **Compression is invisible to the agent.** The agent never sees `AGENT:COMPRESSION_EVENT`. Compression is an infrastructure event; the agent's worldview is identical before and after.
 5. **Every DoD criterion is machine-verifiable.** "POST /auth/login returns JWT" is not a criterion; `curl http://localhost:3000/auth/login -d '...' | jq -e '.token | test("^ey")'` is. If you can't write the check as code, the criterion is not a criterion.
 6. **Micro-tasks only.** A step whose verification cannot be encoded as a single command or single-file check is too large and must be split. See § 4.
 7. **Black-box everything sealed.** Once a step is DONE DONE, its implementation is invisible to the rest of the system. Downstream work reads only the sealed output contract, never the implementation.
-8. **Service Registry before every new file.** No agent writes a module without first grepping `SERVICES.md` for something that already fulfills the contract. DRY is a verification failure.
+8. **Inventory before every new file.** No agent writes a module without first grepping `INVENTORY.md` for something that already fulfills the contract. DRY is a verification failure.
 9. **No early stopping; no skipping.** A step that fails any DoD criterion stays `IN_PROGRESS`. "Hard" is not a reason to advance. The only terminal states are `SEALED` (verified done) or `ABANDONED` (explicit human decision, logged).
-10. **Sub-agent scope reduction is absolute.** A sub-agent sees its own `DIRECTIVES.md`, its own `JOURNAL.md`, `SERVICES.md`, and the files in its `INPUT CONTRACT`. Nothing else. Not the parent's plan, not sibling agents, not the project root. Parents mediate.
-11. **Writes are atomic.** `JOURNAL.md` writes use tmp-file + `fsync` + `rename` + directory `fsync`. `DIRECTIVES.md` is written once at spawn with the same atomicity, then chmod'd read-only.
-12. **Prompt cache boundary = file boundary.** The cached portion contains the immutable DIRECTIVES (via `extraSystemPrompt`); the uncached portion contains the JOURNAL-derived status. Cache hits are structural, not coincidental. See § 13.
+10. **Sub-agent scope reduction is absolute.** A sub-agent sees its own `DIRECTIVES.md`, its own `JOURNAL.md`, `INVENTORY.md`, and the files in its `INPUT CONTRACT`. Nothing else. Not the parent's plan, not sibling agents, not the project root. Parents mediate.
+11. **Writes are atomic.** `JOURNAL.md` writes use tmp-file + `fsync` + `rename` + directory `fsync`. `DIRECTIVES.md` is written once at spawn with the same atomicity; the writer refuses to overwrite an existing file.
+12. **The system prompt is byte-stable for the agent's lifetime.** Tools, base system prompt, and DIRECTIVES (via `extraSystemPrompt`) are written once at spawn and never mutate. All dynamic state — JOURNAL-derived live status, the user/tool-result turn, the LCM summary — injects *after* the cache boundary, into the messages array. **Adding a new turn must never invalidate the cached system prefix.** This is the invariant a Responses-API-style cache relies on; we treat every turn the same way. Cache hits are structural, not coincidental. See § 13.
 13. **Infinite-run by default, bounded by budget and by DoD.** The agent does not stop because the conversation is long. It stops only when all DoD is verified PASS, or when an explicit turn/cost/wall-clock budget triggers a `BUDGET_EXCEEDED` event that escalates to the parent.
-14. **Constrain mechanical parts; delegate creative parts to the model.** The system hard-codes WHAT "done" means (typed verifiers, post-turn revert, independent re-verification, progressive retry), HOW state flows (DIRECTIVES/JOURNAL split, seal-and-archive, SERVICES.md), and WHICH claims are trustworthy (in-process verifier-pass map). The system does NOT hard-code how to decompose a task, how to phrase a sub-task, how to reason about a domain, or how to write a rubric — those are the model's job. When a new task type seems to need a new mechanism, first ask: can this be an `llm_judge` rubric (creative, delegated) instead of a new verifier type (mechanical, enforced)? Adding mechanism is a last resort; delegating to the model under a bounded rubric is the default path to generality. This is how the design handles HCAST's general-reasoning tier, research-writeup tasks, and anything with fuzzy success criteria — without ever letting the model self-assess completion.
+14. **Constrain mechanical parts; delegate creative parts to the model.** The system hard-codes WHAT "done" means (typed verifiers, post-turn revert, independent re-verification, progressive retry), HOW state flows (DIRECTIVES/JOURNAL split, seal-and-archive, INVENTORY.md), and WHICH claims are trustworthy (in-process verifier-pass map). The system does NOT hard-code how to decompose a task, how to phrase a sub-task, how to reason about a domain, or how to write a rubric — those are the model's job. When a new task type seems to need a new mechanism, first ask: can this be an `llm_judge` rubric (creative, delegated) instead of a new verifier type (mechanical, enforced)? Adding mechanism is a last resort; delegating to the model under a bounded rubric is the default path to generality. This is how the design handles HCAST's general-reasoning tier, research-writeup tasks, and anything with fuzzy success criteria — without ever letting the model self-assess completion.
 
 ---
 
@@ -66,9 +66,10 @@ These are non-negotiable. Any code or schema that contradicts one of these is a 
 │  PENDING stages are editable until activation.              │
 ├─────────────────────────────────────────────────────────────┤
 │  ARTIFACT 2a: DIRECTIVES.md  (one per agent — IMMUTABLE)    │
-│  Written once by the parent at spawn. chmod 0444 +          │
-│  SHA tamper check. Contains: goal, I/O contracts, DoD,      │
-│  constraints, turn budget, initial decomposition, PROTOCOL. │
+│  Written once by the parent at spawn. The writer refuses to │
+│  overwrite an existing file; PROTOCOL forbids agent edits.  │
+│  Contains: goal, I/O contracts, DoD, constraints,           │
+│  turn budget, initial decomposition, PROTOCOL.              │
 │  Becomes part of the cached system prompt via               │
 │  extraSystemPrompt. Never re-injected per turn — it's       │
 │  already in the cache. Agent cannot modify it.              │
@@ -80,7 +81,7 @@ These are non-negotiable. Any code or schema that contradicts one of these is a 
 │  injected as prependSystemContext (outside cache boundary). │
 │  Atomic writes (tmp + fsync + rename).                      │
 ├─────────────────────────────────────────────────────────────┤
-│  ARTIFACT 3: SERVICE REGISTRY (SERVICES.md + services/*.md) │
+│  ARTIFACT 3: INVENTORY (INVENTORY.md + inventory/*.md) │
 │  Append-only catalog of every sealed output contract in the │
 │  project. Each entry: name, I/O schema, location, usage     │
 │  example, owner stage. MUST be consulted before any agent   │
@@ -88,8 +89,8 @@ These are non-negotiable. Any code or schema that contradicts one of these is a 
 ├─────────────────────────────────────────────────────────────┤
 │  ARTIFACT 4: OBSERVER LOG (.agent-events.jsonl)             │
 │  Append-only JSONL. Every compression, step complete, stage │
-│  seal, stuck warning, budget event, tamper attempt. Agent   │
-│  never reads this. Logan + monitoring scripts consume it.   │
+│  seal, stuck warning, budget event. Agent never reads this. │
+│  Logan + monitoring scripts consume it.                     │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -98,12 +99,12 @@ The DIRECTIVES/JOURNAL split is load-bearing. Without it, either the contract mu
 ### 3.1 The Recursion Principle
 Every agent — main, sub, sub-sub — runs the same system. It has exactly one `DIRECTIVES.md` scoped to its task. It knows only what its Input Contract allows and publishes only what its Output Contract specifies. Parallelism is safe because scopes do not overlap; compression is survivable because the scope is re-injected every turn.
 
-### 3.2 The Service Registry Principle (new, critical)
+### 3.2 The Inventory Principle (new, critical)
 Before *any* agent writes a new module, class, function, script, or file, it must:
-1. `read SERVICES.md`
+1. `read INVENTORY.md`
 2. `grep` for its intent (e.g., "JWT", "login", "redis session")
 3. If a matching service exists → **consume it as a black box** (read its I/O contract, call it; do not re-read its implementation)
-4. If no match → proceed with implementation *and* append a new entry to `SERVICES.md` on seal
+4. If no match → proceed with implementation *and* append a new entry to `INVENTORY.md` on seal
 
 This is the mechanism that turns parallel sub-agents from DRY hazards into compounding leverage.
 
@@ -133,7 +134,7 @@ name: Implement POST /auth/login handler
 input_contract:
   - path: db/schema.sql                # machine-readable path
     required_section: "users"
-  - service: services/session-store.md # from Service Registry
+  - service: inventory/session-store.md # from Inventory
 output_contract:
   - path: src/routes/auth-login.ts
     exports: ["loginHandler"]
@@ -197,14 +198,14 @@ cost_budget_usd: 50.00               # soft cap; emits BUDGET_WARNING at 80%
 5. stage-05-tests        | PENDING   | depends: [stage-04]
 6. stage-06-deploy       | PENDING   | depends: [stage-05]
 
-## Sealed Outputs Registry (append-only; mirror of SERVICES.md summary)
-- stage-01: src/ scaffold — see services/src-scaffold.md
-- stage-02: db/schema.sql — see services/db-schema.md
+## Sealed Outputs Registry (append-only; mirror of INVENTORY.md summary)
+- stage-01: src/ scaffold — see inventory/src-scaffold.md
+- stage-02: db/schema.sql — see inventory/db-schema.md
 
 ## Global Constraints
 - No hardcoded secrets anywhere in the tree.
 - All new modules must export a typed interface.
-- Every sealed output publishes to SERVICES.md.
+- Every sealed output publishes to INVENTORY.md.
 
 ## Notes
 [Tech constraints, conventions, anything project-wide.]
@@ -224,8 +225,8 @@ sealed:   null
 turn_budget: 200            # total across sub-agents for this stage
 
 ## Depends On
-# Each entry is a Service Registry pointer.
-- service: services/db-schema.md
+# Each entry is a Inventory pointer.
+- service: inventory/db-schema.md
   required_sections: ["users", "sessions"]
 
 ## Output Contract
@@ -239,7 +240,7 @@ turn_budget: 200            # total across sub-agents for this stage
   exports: []
   interface: "vitest test suite"
 - kind: service
-  path: services/auth.md                # published to registry on seal
+  path: inventory/auth.md                # published to registry on seal
 
 ## Definition of Done
 - type: test_passes
@@ -264,8 +265,8 @@ A:
   id: stage-03.A
   goal: Implement /auth/login and /auth/logout route handlers
   input_contract:
-    - service: services/db-schema.md#users
-    - service: services/redis-session.md
+    - service: inventory/db-schema.md#users
+    - service: inventory/redis-session.md
   output_contract:
     - path: src/routes/auth.ts
   can_start: immediately
@@ -276,7 +277,7 @@ B:
   goal: Integration test suite for auth endpoints
   input_contract:
     - path: src/routes/auth.ts              # A's output contract; NOT implementation
-    - service: services/test-harness.md
+    - service: inventory/test-harness.md
   output_contract:
     - path: tests/auth.test.ts
   can_start: after A.seal
@@ -301,16 +302,16 @@ B:
 produced:
   - src/routes/auth.ts   sha: abc123
   - tests/auth.test.ts   sha: def456
-registry_entry: services/auth.md
+registry_entry: inventory/auth.md
 dod_status: all_pass
 notes: |
-  Auth uses jsonwebtoken. Session store is Redis via services/redis-session.md.
+  Auth uses jsonwebtoken. Session store is Redis via inventory/redis-session.md.
   No changes to db/schema.sql required.
 ```
 
 ### 5.3 DIRECTIVES.md (one per agent — IMMUTABLE)
 
-Written **once** by the parent at spawn, then `chmod 0444` and SHA-recorded. The agent cannot modify it. Its content is copied into the agent's system prompt as `extraSystemPrompt` at spawn — which means it lives *inside* the Anthropic cache boundary and is not re-injected per turn. The agent sees it once as part of the initial system prompt; from then on it's cached for 1h and refreshed only on TTL expiry.
+Written **once** by the parent at spawn. The writer refuses to overwrite an existing DIRECTIVES.md, and the agent's PROTOCOL forbids modification — see § 10.4. The contents are copied into the agent's system prompt as `extraSystemPrompt` at spawn — which means it lives *inside* the Anthropic cache boundary and is not re-injected per turn. The agent sees it once as part of the initial system prompt; from then on it's cached for 1h and refreshed only on TTL expiry.
 
 ```markdown
 # DIRECTIVES (immutable for this agent's lifetime)
@@ -327,9 +328,9 @@ auth stage output contract.
 
 ## INPUT CONTRACT
 # Exact. Path-level. No "check the repo."
-- service: services/db-schema.md
+- service: inventory/db-schema.md
   sections: [users]
-- service: services/redis-session.md
+- service: inventory/redis-session.md
 - path: constants/auth-config.ts  (token TTLs; may be absent, in which case
                                    constants default to 24h/7d)
 
@@ -354,7 +355,7 @@ auth stage output contract.
 ## CONSTRAINTS
 - No hardcoded secrets.
 - No new dependencies without parent approval (report BLOCKED).
-- Must consume services/db-schema and services/redis-session as black boxes;
+- Must consume inventory/db-schema and inventory/redis-session as black boxes;
   no direct Redis client instantiation.
 
 ## TURN BUDGET
@@ -386,13 +387,13 @@ You are an OpenClaw agent under the Persistent Directive System.
    rejected.
 4. "Kinda done" is not a state. If a criterion FAILs, keep the step
    IN_PROGRESS and write the specific failure to WORKING NOTES.
-5. Before creating any new file: read ../../SERVICES.md and grep it for a
+5. Before creating any new file: read ../../INVENTORY.md and grep it for a
    service that already covers your need. If one exists, consume it as a
    black box — do NOT read its implementation. If none exists, proceed,
    and the sealed output will be published to the registry by your parent.
-6. You MAY NOT modify this file (DIRECTIVES.md). It is chmod 0444. Attempts
-   are logged to .agent-events.jsonl as AGENT:DIRECTIVES_TAMPER_ATTEMPT and
-   escalated to the parent.
+6. You MAY NOT modify this file (DIRECTIVES.md). It is your contract,
+   written once by your parent. If you believe a field is wrong, report
+   BLOCKED: contract-dispute in JOURNAL.md and wait for parent guidance.
 7. If blocked for real (the spec is wrong, an input is missing, a
    dependency is broken), write blocker: in JOURNAL.md and emit BLOCKED.
    Do NOT thrash. Do NOT auto-advance. Wait for parent guidance.
@@ -427,8 +428,8 @@ status: DONE
 completed: 2026-04-16T03:46:30Z
 verifier_run_id: vr-0001
 verified_outputs:
-  - services/db-schema.md  read, users section confirmed
-  - services/redis-session.md  read, interface noted
+  - inventory/db-schema.md  read, users section confirmed
+  - inventory/redis-session.md  read, interface noted
 black_box: YES
 
 #### step-2: Implement loginHandler (happy path)
@@ -455,7 +456,7 @@ expected_output: "src/routes/auth.ts:logoutHandler invalidates session in Redis"
 
 ## WORKING NOTES
 # Scratch only. Safe to clear on each step DONE.
-- Redis session key pattern from services/redis-session.md: "sess:{jti}".
+- Redis session key pattern from inventory/redis-session.md: "sess:{jti}".
 - Rate-limit key: "rl:login:{email}" with 5 req / 5 min window.
 - After logout, SESSION:{jti} must be removed AND added to a blacklist set.
 
@@ -480,22 +481,22 @@ NEXT STEP:    step-4 — Implement logoutHandler
 
 That's ~100-150 tokens. Cheap. Fresh every turn. Never busts the cache because it sits *after* the boundary.
 
-### 5.4 SERVICES.md + `services/*.md` (Service Registry)
+### 5.4 INVENTORY.md + `inventory/*.md`
 
-`SERVICES.md` is the index. One line per sealed service. `services/<name>.md` is the detail card.
+`INVENTORY.md` is the index. One line per sealed service. `inventory/<name>.md` is the detail card.
 
 ```markdown
-# SERVICES — Registry
+# INVENTORY
 schema_version: 1
 # One line per sealed output. Append-only. Sorted by stage order, not time.
 
-- db-schema        | stage-02 | services/db-schema.md      | Postgres schema (users, sessions, tokens)
-- redis-session    | stage-02 | services/redis-session.md  | Session store client (get/set/invalidate)
-- auth             | stage-03 | services/auth.md           | POST /auth/login, /auth/logout
-- test-harness     | stage-01 | services/test-harness.md   | vitest config + fixtures
+- db-schema        | stage-02 | inventory/db-schema.md      | Postgres schema (users, sessions, tokens)
+- redis-session    | stage-02 | inventory/redis-session.md  | Session store client (get/set/invalidate)
+- auth             | stage-03 | inventory/auth.md           | POST /auth/login, /auth/logout
+- test-harness     | stage-01 | inventory/test-harness.md   | vitest config + fixtures
 ```
 
-Each `services/<name>.md`:
+Each `inventory/<name>.md`:
 
 ```markdown
 # Service: auth
@@ -524,19 +525,19 @@ app.use("/auth", authRouter);
 ```
 
 ## Depends on (black-box)
-- services/db-schema.md#users
-- services/redis-session.md
+- inventory/db-schema.md#users
+- inventory/redis-session.md
 
 ## Verifier snippets (for downstream consumers)
 - Smoke test: `curl -s -X POST localhost:3000/auth/login -d '{...}' | jq -e '.token'`
 
 ## Do NOT
-- Instantiate a Redis client directly; use services/redis-session.md.
+- Instantiate a Redis client directly; use inventory/redis-session.md.
 - Read `src/routes/auth.ts` to understand behavior — that file is sealed black-box.
   All contract information is in this file.
 ```
 
-**Critical rule:** every agent reads `SERVICES.md` as step zero of every task. Grep for intent. If a service covers your need, consume it; do not reimplement.
+**Critical rule:** every agent reads `INVENTORY.md` as step zero of every task. Grep for intent. If a service covers your need, consume it; do not reimplement.
 
 ### 5.5 `.agent-events.jsonl`
 
@@ -577,7 +578,7 @@ Main agents have no parent to spawn them, so `extraSystemPrompt` has to come fro
 
 ### 6.0a Default DIRECTIVES template and presets
 
-**One main-agent template, not two.** The orchestration contract (orch-loop A-K, PROTOCOL, atomicity rules, SERVICES pre-flight, seal-and-archive) is identical regardless of domain. Software vs research vs ML doesn't change HOW the main agent orchestrates; it changes WHAT the sub-agents verify against. So we ship:
+**One main-agent template, not two.** The orchestration contract (orch-loop A-K, PROTOCOL, atomicity rules, INVENTORY pre-flight, seal-and-archive) is identical regardless of domain. Software vs research vs ML doesn't change HOW the main agent orchestrates; it changes WHAT the sub-agents verify against. So we ship:
 
 1. **One main-agent DIRECTIVES template** (`templates/main-directives.md`). The orch-loop and PROTOCOL are fixed; GOAL, INPUT/OUTPUT CONTRACT, CONSTRAINTS, TURN BUDGET get filled in from PLAN.md or the `directives init` wizard.
 
@@ -680,17 +681,16 @@ extensions/directive-persistence/
   src/
     index.ts                # plugin entry; registers hooks
     directives/
-      schema.ts             # zod schemas: DIRECTIVES (immutable), JOURNAL (mutable), PLAN, stage, SERVICES
+      schema.ts             # zod schemas: DIRECTIVES (immutable), JOURNAL (mutable), PLAN, stage, INVENTORY
       parse.ts              # typed parser for DIRECTIVES.md
       journal.ts            # typed parser + atomic writer for JOURNAL.md (DONE gate included)
-      tamper.ts             # SHA check vs .directives-lock.json
       inject.ts             # buildLiveStateInjection(journal) → prependSystemContext
       snapshot.ts           # pre-compression JOURNAL snapshot (≤400B)
     spawn/
-      write-directives.ts   # atomic write → chmod 0444 → record lock; builds extraSystemPrompt
+      write-directives.ts   # atomic write (refuses to overwrite); builds extraSystemPrompt
       parse-task-complete.ts
-    services/
-      registry.ts           # read SERVICES.md, grep, register new entry (parent-side only)
+    inventory/
+      registry.ts           # read INVENTORY.md, grep, register new entry (parent-side only)
     plan/
       plan.ts               # read/write PLAN.md
       stage.ts              # read/write stage files
@@ -729,32 +729,16 @@ The `before_prompt_build` hook reads JOURNAL.md every turn and returns a small `
 import { sdk } from "@openclaw/plugin-sdk";
 import { readJournal } from "./directives/journal.ts";
 import { buildLiveStateInjection } from "./directives/inject.ts";
-import { verifyDirectivesIntegrity } from "./directives/tamper.ts";
 import { appendEvent } from "./events/log.ts";
 import { snapshotJournal } from "./directives/snapshot.ts";
 
 sdk.registerHook("before_prompt_build", async (_event, ctx) => {
-  const journalPath    = path.join(ctx.workspaceDir, "JOURNAL.md");
-  const directivesPath = path.join(ctx.workspaceDir, "DIRECTIVES.md");
+  const journalPath = path.join(ctx.workspaceDir, "JOURNAL.md");
 
   // Non-directive sessions: no-op. We do NOT inject anything from
   // DIRECTIVES.md here — it lives in the cached system prompt (extraSystemPrompt)
   // and is already visible to the model.
   if (!(await fileExists(journalPath))) return {};
-
-  // Cheap tamper check: compare SHA of DIRECTIVES.md to the SHA recorded
-  // at spawn time in .directives-lock.json. If mismatch, log and STILL inject
-  // live state (don't brick the session) — parent will intervene.
-  const tampered = await verifyDirectivesIntegrity(ctx.workspaceDir).catch(() => false);
-  if (tampered) {
-    await appendEvent(ctx.workspaceDir, {
-      event: "AGENT:DIRECTIVES_TAMPER_ATTEMPT",
-      ts: new Date().toISOString(),
-      agent: ctx.agentId,
-      session: ctx.sessionKey,
-      directives_path: directivesPath,
-    });
-  }
 
   const journal = await readJournal(journalPath); // throws on malformed → log.warn swallows
   return { prependSystemContext: buildLiveStateInjection(journal) };
@@ -829,7 +813,7 @@ REMINDERS:
     prompt — already visible above. Do not re-read DIRECTIVES.md per turn.
   - To mark a step DONE, you must first call the verifier runner and have
     every DoD criterion return PASS. The write layer enforces this.
-  - Before any new file, grep ../../SERVICES.md for existing services.
+  - Before any new file, grep ../../INVENTORY.md for existing services.
 ```
 
 ~100-150 tokens. Sits after the cache boundary; always recomputed. Cost per turn is trivial.
@@ -874,7 +858,7 @@ The `llm_judge` type is how the system handles tasks whose success is not expres
   rubric_path: rubrics/code-review-quality.md   # or inline `rubric:` string
   inputs:                                        # what the judge sees
     - artifact: src/routes/auth.ts
-    - interface: services/auth.md
+    - interface: inventory/auth.md
     - constraint: "JWT expiry must be 24h; no hardcoded secrets"
   min_score: 4.0           # out of 5 on the rubric's scale
   judge_model: sonnet-4.6  # independent of the doer's model
@@ -937,13 +921,13 @@ Everything below is engineered so the main agent can still function correctly at
 **Main agent writes** (continuously, over the project lifetime):
 - `JOURNAL.md` (its own)
 - Every stage file under `project-plan/` (scaffolded from the stage entries in PLAN.md)
-- Every sub-agent's `DIRECTIVES.md` + `.directives-lock.json`
-- `services/<name>.md` cards at seal time
-- Appends to `SERVICES.md`, PLAN.md Sealed Outputs Registry, and `.agent-events.jsonl`
+- Every sub-agent's `DIRECTIVES.md` (write-once)
+- `inventory/<name>.md` cards at seal time
+- Appends to `INVENTORY.md`, PLAN.md Sealed Outputs Registry, and `.agent-events.jsonl`
 
 **Main agent never writes:**
 - `PLAN.md` top-level sections (Goal, project DoD, Stages list) — only the human edits those via REPLAN (§ 12.3). Main agent DOES append to PLAN.md's Sealed Outputs Registry on seal; that section is explicitly main-writable.
-- Its own DIRECTIVES.md — `chmod 0444`, same rule as every other agent.
+- Its own DIRECTIVES.md — write-once, same rule as every other agent.
 - Any file under `src/`, `tests/`, or other implementation directories. Main dispatches; children implement.
 
 ### 8.1 Main agent's DIRECTIVES.md (the orchestration contract)
@@ -964,12 +948,12 @@ do not implement.
 
 ## INPUT CONTRACT
 - ./PLAN.md                           # human-authored; REPLAN-gated edits
-- ./SERVICES.md                       # starts empty; you append on seal
+- ./INVENTORY.md                       # starts empty; you append on seal
 - ./project-plan/                     # starts empty; you scaffold stage files
 
 ## OUTPUT CONTRACT
 - All stages in PLAN.md reach status: SEALED
-- All sealed outputs published to SERVICES.md + services/*.md cards
+- All sealed outputs published to INVENTORY.md + inventory/*.md cards
 - Project DoD verifier (from PLAN.md) returns allPass
 
 ## DEFINITION OF DONE
@@ -984,9 +968,9 @@ do not implement.
 ## CONSTRAINTS
 - Do NOT execute implementation work. Dispatch to sub-agents.
 - Do NOT read files under src/, tests/, or other implementation dirs.
-  To understand what a sealed stage produced, read its services/*.md card —
+  To understand what a sealed stage produced, read its inventory/*.md card —
   never the source.
-- Do NOT modify a SEALED stage file or an already-written services/*.md.
+- Do NOT modify a SEALED stage file or an already-written inventory/*.md.
 - Do NOT mark a child DONE on their claim alone — always re-verify (§ 8.5).
 - Maintain the bounded-JOURNAL invariant (§ 8.7): every stage seal triggers
   an archival step that collapses the stage's JOURNAL detail into a one-line
@@ -1001,7 +985,7 @@ max_turns: 2000     warning_at: 1600    escalate_at: 1900
 - orch-A: Bootstrap validation (once, on first turn)
 - orch-B: Pick next runnable stage (one whose deps are all SEALED)
 - orch-C: Read/validate stage file; scaffold if missing
-- orch-D: Pre-flight SERVICES.md reuse check for each declared sub-task
+- orch-D: Pre-flight INVENTORY.md reuse check for each declared sub-task
 - orch-E: Decompose → write one DIRECTIVES.md per surviving sub-task (§ 8.4)
 - orch-F: Spawn sub-agents (parallel where can_start allows)
 - orch-G: Monitor + re-verify TASK_COMPLETE claims (§ 8.5)
@@ -1017,15 +1001,15 @@ System. You coordinate; you do not implement.
 1. You maintain ./JOURNAL.md. Its structure is defined in § 8.2.
 2. Each stage is a repeat of orch-B through orch-I. You do NOT hold "the
    whole project" in context at once; you hold exactly the current stage.
-3. Before any decomposition step, read ./SERVICES.md and grep it. Reuse
+3. Before any decomposition step, read ./INVENTORY.md and grep it. Reuse
    before implementation. DRY is a verification failure.
 4. Never read implementation files. If you need to know what stage-02
-   produced, read services/<name>.md — never src/. The black-box rule is
+   produced, read inventory/<name>.md — never src/. The black-box rule is
    strictest for you because your context has to survive the longest.
 5. Never trust a child's TASK_COMPLETE message. Re-verify every claim by
    running that child's DoD independently (§ 8.5).
 6. Compaction is invisible. On the other side, PLAN.md + JOURNAL.md +
-   SERVICES.md + the stage file of your CURRENT STAGE give you complete
+   INVENTORY.md + the stage file of your CURRENT STAGE give you complete
    situational awareness. Trust the files, not the conversation.
 7. On every stage seal: run orch-I (archival). The stage's detail moves
    from JOURNAL into the stage file's SEALED SUMMARY. JOURNAL keeps only
@@ -1079,9 +1063,7 @@ completed: 2026-04-16T03:58:04Z
 verifier_run_id: vr-main-0041
 verified_outputs:
   - project-plan/stage-03-auth/sub-a-d7e9/DIRECTIVES.md  sha 8f3e...
-  - project-plan/stage-03-auth/sub-a-d7e9/.directives-lock.json
   - project-plan/stage-03-auth/sub-b-f1a2/DIRECTIVES.md  sha 2a9c...
-  - project-plan/stage-03-auth/sub-b-f1a2/.directives-lock.json
 black_box: YES
 
 #### orch-F: Spawn children for stage-03
@@ -1114,7 +1096,7 @@ status: PENDING
 # Scratch for CURRENT STAGE only. Cleared on archival.
 - sub:auth-b appears blocked-ready; last_heartbeat 12s ago is fine.
 - Reminder: on seal, verify src/routes/auth.ts interface matches the
-  services/auth.md card I'll author, not by reading the source — by
+  inventory/auth.md card I'll author, not by reading the source — by
   asking sub:auth-b to echo its interface in TASK_COMPLETE.
 
 ## SUB-AGENTS (historical — empty; use .agent-events.jsonl for history)
@@ -1159,7 +1141,7 @@ REMINDERS:
   - Your orchestration contract is in your system prompt above.
   - On seal: run orch-I archival to keep JOURNAL bounded.
   - Re-verify children via their own DoD before marking them DONE.
-  - Never read src/ — read services/*.md cards.
+  - Never read src/ — read inventory/*.md cards.
 ```
 
 ~250 tokens. Recomputed every turn. Bounded regardless of project size because the COMPLETED STAGES count appears as a scalar, not a list.
@@ -1169,7 +1151,7 @@ REMINDERS:
 The main agent does not freehand child DIRECTIVES. It follows a template-driven pipeline with validation at each step. Every child DIRECTIVES is the output of this pipeline; it is not "written" in the creative sense.
 
 **Step 1 — Resolve inputs to path-level pointers.**
-Every Input Contract entry must be one of: a file path that exists, or `services/<name>.md` pointer. "Check the repo" / "look at the db stuff" are rejected by the validator. If the main agent can't specify an exact input, the sub-task is not ready.
+Every Input Contract entry must be one of: a file path that exists, or `inventory/<name>.md` pointer. "Check the repo" / "look at the db stuff" are rejected by the validator. If the main agent can't specify an exact input, the sub-task is not ready.
 
 **Step 2 — Resolve outputs to single-artifact Output Contracts.**
 Each Output Contract entry must be: exactly one file, OR one service card, OR one well-defined artifact. If a sub-task has two primary outputs (`src/foo.ts` AND `src/bar.ts` of unrelated concerns), split it.
@@ -1200,14 +1182,10 @@ The template is fixed; the fields that vary are:
 **Step 6 — Schema validate.**
 Run the DIRECTIVES zod validator on the generated content. Any failure → fix and retry. No child spawn without a valid DIRECTIVES.
 
-**Step 7 — Atomic write + chmod + lock.**
-In one atomic sequence:
-1. `writeDirectivesAtomic(path)` (tmp + fsync + rename + dir-fsync).
-2. `chmod 0444` the file.
-3. Compute SHA-256; write `.directives-lock.json` with `{ sha256, size, written_at }`.
-4. `AGENT:CHILD_DIRECTIVES_WRITTEN` event.
+**Step 7 — Atomic write.**
+`writeDirectivesAtomic(path)` (tmp + fsync + rename + dir-fsync). The writer refuses to overwrite an existing DIRECTIVES.md — second writes return an error so accidental overwrites can't strip the contract. Emit `AGENT:CHILD_DIRECTIVES_WRITTEN`.
 
-The *existence of `.directives-lock.json`* is the marker "this child has been prepared." It is what makes orch-E resumable across compactions: if main is compacted mid-decomposition, the next turn re-scans the stage directory, sees which locks exist, and only processes sub-tasks that don't have a lock yet.
+The *existence of `DIRECTIVES.md` in the child's workspace* is the marker "this child has been prepared." It is what makes orch-E resumable across compactions: if main is compacted mid-decomposition, the next turn re-scans the stage directory, sees which DIRECTIVES already exist, and only processes sub-tasks that haven't been written yet.
 
 **Step 8 — Spawn.**
 `sessions_spawn` with `extraSystemPrompt` set to the DIRECTIVES content, `workspaceDir` set to the sub-agent's directory, `attachments` including DIRECTIVES.md as redundancy. Record the session key in JOURNAL Active Children + emit `AGENT:SUBAGENT_SPAWNED`.
@@ -1280,11 +1258,10 @@ DoD for this orch-step, in order:
 
 Then:
 1. Write SEALED SUMMARY block into stage file (§ 5.2).
-2. For each service output: write `services/<name>.md` (main authors; child's TASK_COMPLETE may have proposed it, but main writes it so the card is trusted).
-3. Append to `SERVICES.md` index.
+2. For each service output: write `inventory/<name>.md` (main authors; child's TASK_COMPLETE may have proposed it, but main writes it so the card is trusted).
+3. Append to `INVENTORY.md` index.
 4. Append to `PLAN.md` Sealed Outputs Registry. (This is the one place main writes to PLAN.md.)
-5. `chmod 0444` the stage file.
-6. Emit `AGENT:STAGE_SEALED` with outputs + service cards.
+5. Emit `AGENT:STAGE_SEALED` with outputs + service cards.
 
 Stage is now immutable. Its detail leaves JOURNAL in the next step.
 
@@ -1322,7 +1299,7 @@ On any turn — whether turn 5 or turn 10,000 — the main agent's orientation c
 2. **LIVE STATE injection** (from JOURNAL): CURRENT STAGE (if any), Active Children (bounded), current orch-step with DoD, next orch-steps, completed stages count, reminders. ≤500 tokens.
 3. **PLAN.md** — read at orch-B (stage selection) and whenever PENDING STAGES mirror goes stale. Never more than once per stage.
 4. **Current stage file** — read at orch-C and whenever orch-steps need its sub-task list or Output Contract. Bounded size.
-5. **SERVICES.md** — read at orch-D (pre-flight DRY check) and on any seal when authoring new service cards. Append-only, small.
+5. **INVENTORY.md** — read at orch-D (pre-flight DRY check) and on any seal when authoring new service cards. Append-only, small.
 6. **Previous stage files** — read only if the current stage's Input Contract references their output. Stage file's service card is the first read; source code is never read.
 7. **`.agent-events.jsonl`** — NEVER read by main. That file is for humans.
 
@@ -1337,7 +1314,7 @@ Our design passes this test by construction because:
 - Every orch-step has its DoD written into JOURNAL alongside its status.
 - Every completed step has verifier evidence in `.agent-events.jsonl` (reachable if main needs to verify a claim).
 - Every active child's status is in JOURNAL.
-- Every sealed stage's outputs are in its stage file, published to SERVICES.md, and summarized in PLAN.md.
+- Every sealed stage's outputs are in its stage file, published to INVENTORY.md, and summarized in PLAN.md.
 
 ### 8.9 Main agent's self-completion
 
@@ -1345,7 +1322,7 @@ Main is DONE when:
 - Every stage in PLAN.md has `status: SEALED`.
 - `runAllDoD(PLAN.md project-level DoD)` returns allPass.
 - No Active Children; no pending orch-steps except orch-K.
-- `SERVICES.md` has a card for every Output Contract entry across all sealed stages.
+- `INVENTORY.md` has a card for every Output Contract entry across all sealed stages.
 
 On verified completion:
 1. Emit `AGENT:PROJECT_COMPLETE` with total turn count, total cost, service count, total compactions.
@@ -1374,7 +1351,7 @@ OpenClaw 2026 exposes `sessions_spawn` via the `sessions-spawn-tool` (see `src/a
 
 ```
 1. mkdir -p /workspace/<sub-id>
-2. write SERVICES.md symlink or copy into /workspace/<sub-id>/SERVICES.md
+2. write INVENTORY.md symlink or copy into /workspace/<sub-id>/INVENTORY.md
    (read-only view; sub-agent consults but cannot seal new services — parent does)
 3. write /workspace/<sub-id>/DIRECTIVES.md  (atomic)
 4. verify file_exists + schema validates (refuse to spawn if not)
@@ -1415,7 +1392,7 @@ Free-form TASK_COMPLETE messages are error-prone — one misplaced colon and the
         "result": "PASS"
       }
     ],
-    "service_card_proposal": "string | null  (markdown body of services/<name>.md the PARENT will author; null if no service output)"
+    "service_card_proposal": "string | null  (markdown body of inventory/<name>.md the PARENT will author; null if no service output)"
   }
 }
 ```
@@ -1456,8 +1433,8 @@ On pass: plugin emits `AGENT:TASK_COMPLETE` to `.agent-events.jsonl`, marks the 
 **The only other message shape a child produces** is normal assistant text during its work. TASK_COMPLETE and TASK_BLOCKED are terminal tool calls — after them, the child awaits parent.
 
 ### 9.3 Sub-agent isolation rules
-- Reads only: own `DIRECTIVES.md`, own `JOURNAL.md`, own `SERVICES.md` symlink, files listed in Input Contract.
-- Writes only: paths in Output Contract, own `JOURNAL.md`. DIRECTIVES.md is `chmod 0444` — writes fail at the OS layer.
+- Reads only: own `DIRECTIVES.md`, own `JOURNAL.md`, own `INVENTORY.md` symlink, files listed in Input Contract.
+- Writes only: paths in Output Contract, own `JOURNAL.md`. DIRECTIVES.md is the agent's contract — the PROTOCOL forbids writes; the writer refuses to overwrite.
 - Does NOT read parent's `DIRECTIVES.md`/`JOURNAL.md`, `PLAN.md`, stage files, or sibling workspaces.
 - Does NOT call `sessions_spawn` directly on siblings. It MAY spawn its own sub-sub-agents (recursive same system) if its own plan decomposition calls for it — in which case it is itself a parent and writes the child's DIRECTIVES + lock file.
 - On `BLOCKED`: writes `blocker:` into JOURNAL.md, emits `AGENT:BLOCKED`, sends `TASK_BLOCKED` to parent, stops.
@@ -1472,7 +1449,7 @@ On pass: plugin emits `AGENT:TASK_COMPLETE` to `.agent-events.jsonl`, marks the 
 
 ## 10. Agent Write Protocol
 
-Agents write exactly one file: `JOURNAL.md`. `DIRECTIVES.md` is `chmod 0444` immediately after spawn-time write, and its SHA is recorded in `.directives-lock.json`. Every `before_prompt_build` re-verifies that SHA; mismatch emits `AGENT:DIRECTIVES_TAMPER_ATTEMPT` and the parent is expected to intervene.
+Agents write exactly one file: `JOURNAL.md`. `DIRECTIVES.md` is written once at spawn; the writer refuses to overwrite. The agent's PROTOCOL forbids modification, and the real authority for "done" lives in the in-process `verifierPasses` map (§ 10.3a) — so editing the contract bytes gains the agent nothing.
 
 ### 10.1 JOURNAL.md — what agents MAY write
 
@@ -1592,23 +1569,22 @@ sdk.registerHook("after_turn", async (_event, ctx) => {
 **Properties:**
 - Agent can `echo "status: DONE"` into JOURNAL all it wants. The post-turn hook reverts the transition next turn end, before any downstream code trusts it.
 - Legitimate DONE (agent called `verifier.run`, got allPass, then wrote DONE) passes through unchanged.
-- `dod_hash` check catches a pathological case: agent runs verifier, gets pass, then edits DIRECTIVES (impossible due to chmod, but defensive) or the step's DoD interpretation — revert triggers.
+- `dod_hash` check catches a pathological case: agent edits DIRECTIVES (forbidden by PROTOCOL but not OS-enforced) after a verifier run, or the step's DoD interpretation drifts — revert triggers.
 - Reverts are non-destructive: other JOURNAL changes on that turn (progress notes, blocker updates) are preserved. Only the `status: DONE` field reverts.
 - The nudge mechanism prevents infinite reverts — next turn's LIVE STATE tells the agent "step-3 was reverted because you didn't run `verifier.run(step-3)` — call it before claiming DONE."
 
-**This is the correct enforcement point.** No bash trick, no chmod game, no direct filesystem write can bypass it, because the authority is process-memory the agent cannot touch.
+**This is the correct enforcement point.** No bash trick, no direct filesystem write can bypass it, because the authority is process-memory the agent cannot touch.
 
-### 10.4 DIRECTIVES tamper handling
+### 10.4 DIRECTIVES write-once enforcement
 
-On spawn, the parent:
-1. Writes DIRECTIVES.md atomically.
-2. Records `{ sha256: <hex>, written_at: <ts>, size: <bytes> }` into `.directives-lock.json` (alongside DIRECTIVES.md).
-3. `chmod 0444 DIRECTIVES.md` (file-system enforcement — most attempts fail before reaching the plugin).
+On spawn, the parent atomically writes DIRECTIVES.md to the child's workspace (tmp + fsync + rename). The writer **refuses to overwrite** an existing DIRECTIVES.md — second writes return an error so neither the agent nor a buggy orchestration step can silently strip the contract. Once written, the only way to change the contract is to abort the session and respawn with a new DIRECTIVES (§ 10.2).
 
-On every `before_prompt_build`:
-1. Stat DIRECTIVES.md; read first-N-bytes hash (cheap).
-2. If full verification needed (e.g. size changed), compute full SHA.
-3. Mismatch → emit `AGENT:DIRECTIVES_TAMPER_ATTEMPT` with agent ID + observed vs expected SHA. Do NOT restore the file from the hook (the parent owns recovery); do inject live state so the agent can at least report BLOCKED.
+We deliberately do **not** enforce read-only at the OS layer (no `chmod 0444`, no SHA lock-file, no per-turn integrity check). Two reasons:
+
+1. The agent's PROTOCOL forbids modification (§ 5.3) and that's the social contract. An agent that ignores its PROTOCOL has bigger problems than tampered bytes.
+2. The real authority for what counts as "done" is the in-process `verifierPasses` map (§ 10.3a), which is unreachable from any agent shell command. Editing the contract file's bytes does not let the agent forge a passing verifier — the post-turn DONE-revert validator (§ 10.3b) reverts forged DONE transitions regardless of what DIRECTIVES.md says.
+
+If you want belt-and-suspenders for a hostile-input deployment, the writer can opt-in to `chmod 0444` after write — but it's not part of the default mechanism and not load-bearing for any invariant in this design.
 
 ### 10.5 DONE DONE verification sequence
 
@@ -1652,15 +1628,14 @@ All events include `event`, `event_id` (UUIDv4), `ts` (ISO8601 UTC), `agent`, `s
 {"event":"AGENT:STEP_COMPLETE","agent":"sub:auth-a:d7e9","step":"step-2","outputs":["src/routes/auth.ts"]}
 {"event":"AGENT:PRE_COMPRESSION_SNAPSHOT","agent":"sub:auth-a:d7e9","snapshot":{"current_step":"step-3","progress":"...","blocker":null},"msgs_before":450,"tokens_before":180000}
 {"event":"AGENT:COMPRESSION_EVENT","agent":"sub:auth-a:d7e9","msgs_before":450,"msgs_after":64,"compacted_count":386,"tokens_after":52000,"step_at_time":"step-3"}
-{"event":"AGENT:BLOCKED","agent":"sub:auth-a:d7e9","step":"step-3","reason":"dod-dispute","detail":"redis key schema from services/redis-session.md differs from implementation"}
+{"event":"AGENT:BLOCKED","agent":"sub:auth-a:d7e9","step":"step-3","reason":"dod-dispute","detail":"redis key schema from inventory/redis-session.md differs from implementation"}
 {"event":"AGENT:STUCK_WARNING","agent":"sub:auth-a:d7e9","heuristic":"3+ compressions at same step","step":"step-3","compressions_here":4,"last_step_advance_age_s":2100}
 {"event":"AGENT:BUDGET_WARNING","agent":"sub:auth-a:d7e9","turns_used":61,"turn_budget":80,"pct":0.76}
 {"event":"AGENT:BUDGET_EXCEEDED","agent":"sub:auth-a:d7e9","turns_used":80,"turn_budget":80}
-{"event":"AGENT:DIRECTIVES_TAMPER_ATTEMPT","agent":"sub:auth-a:d7e9","directives_path":"/ws/.../DIRECTIVES.md","expected_sha":"ab12...","observed_sha":"cd34..."}
 {"event":"AGENT:JOURNAL_WRITE","agent":"sub:auth-a:d7e9","diff":{"step-3":"status IN_PROGRESS → DONE","step-4":"status PENDING → IN_PROGRESS"}}
 {"event":"AGENT:VERIFIER_RUN","agent":"sub:auth-a:d7e9","step":"step-3","all_pass":false,"failures":[{"type":"shell_exit_zero","detail":"tsc error TS2345"}]}
 {"event":"AGENT:TASK_COMPLETE","agent":"sub:auth-a:d7e9","outputs":["src/routes/auth.ts"],"dod_pass":true}
-{"event":"AGENT:STAGE_SEALED","agent":"main","stage":"stage-03-auth","outputs":["src/routes/auth.ts","tests/auth.test.ts"],"registry":["services/auth.md"]}
+{"event":"AGENT:STAGE_SEALED","agent":"main","stage":"stage-03-auth","outputs":["src/routes/auth.ts","tests/auth.test.ts"],"registry":["inventory/auth.md"]}
 {"event":"AGENT:REPLAN","agent":"main","affected_stages":["stage-04-api","stage-05-tests"],"reason":"requirements clarification"}
 ```
 
@@ -1776,9 +1751,11 @@ This is the complete top-down order of a request, including where LCM's output l
 ```
 
 **Placement summary (the answer to "where does our stuff go?"):**
-1. **DIRECTIVES content** → inside the cached system prompt, above everything.
+1. **DIRECTIVES content** → inside the cached system prompt, above everything. Set once at spawn; never rewritten.
 2. **JOURNAL LIVE STATE** → between the cache boundary and the messages array. Above the LCM summary, above the kept tail.
 3. **LCM output** → inside the `messages` array. We never touch it; it never touches us.
+
+**Per-turn cache stability (the load-bearing invariant — § 2 #12).** The cached prefix (tools + system prompt + DIRECTIVES) is byte-identical from turn 1 to turn N. Adding a new user/tool-result message extends the messages array; the prefix is unchanged; the cache hits. Same shape as a Responses-API-style implicit cache — every turn is a prefix extension, never a prefix mutation. Anything that would change the system prompt mid-run (a hook that writes into `system`, a parent that re-spawns DIRECTIVES with new content, a tool catalog that mutates) breaks this and forces a cache rebuild. Don't do that. If state needs to update mid-run, it goes into JOURNAL (uncached suffix) or it goes into a fresh agent session (new cache, intentional).
 
 ### 13.2 Interaction with LCM (the Lossless Context Engine)
 
@@ -1870,7 +1847,7 @@ Long-horizon agents idle between turns (waiting for a verifier to run, for a sub
 ### 13.8 What NOT to put in the CONTRACT (DIRECTIVES)
 
 - **Anything the parent expects to update mid-flight.** If you need to update it, it belongs in JOURNAL, not DIRECTIVES. If JOURNAL isn't the right home, the parent needs to respawn the agent with a new DIRECTIVES — that's the formal "update contract" path.
-- **Data derived from other agents' runs.** Those are services; reference them via SERVICES.md.
+- **Data derived from other agents' runs.** Those are services; reference them via INVENTORY.md.
 - **Time-sensitive deadlines past TTL.** If a deadline is soft, put it in the PROTOCOL; if it's hard, it becomes a DoD criterion (`shell_exit_zero` on a clock check) or a budget.
 
 ---
@@ -1880,15 +1857,14 @@ Long-horizon agents idle between turns (waiting for a verifier to run, for a sub
 ```
 {project-root}/
   PLAN.md                              ← project plan; REPLAN-gated edits
-  SERVICES.md                          ← service registry index
-  services/
+  INVENTORY.md                          ← inventory index
+  inventory/
     db-schema.md
     redis-session.md
     auth.md
     ...                                ← one per sealed service
-  DIRECTIVES.md                        ← main agent's contract (chmod 0444)
+  DIRECTIVES.md                        ← main agent's contract (write-once)
   JOURNAL.md                           ← main agent's live tracker (agent-owned)
-  .directives-lock.json                ← SHA + size + ts of DIRECTIVES.md
   .agent-events.jsonl                  ← global observer log
   project-plan/
     stage-01-scaffold.md
@@ -1896,25 +1872,23 @@ Long-horizon agents idle between turns (waiting for a verifier to run, for a sub
     stage-03-auth.md                   ← ACTIVE
     stage-03-auth/
       sub-a-d7e9/                      ← sub-agent workspace dir
-        DIRECTIVES.md                  ← immutable, chmod 0444
+        DIRECTIVES.md                  ← write-once, agent must not modify
         JOURNAL.md                     ← mutable, agent-owned
-        .directives-lock.json
-        SERVICES.md                    ← symlink to top-level registry
+        INVENTORY.md                    ← symlink to top-level registry
         .agent-events.jsonl -> ../../../.agent-events.jsonl   (symlink, shared)
       sub-b-f1a2/
         DIRECTIVES.md
         JOURNAL.md
-        .directives-lock.json
-        SERVICES.md
+        INVENTORY.md
         .agent-events.jsonl -> ../../../.agent-events.jsonl
     stage-04-api.md                    ← PENDING (editable)
 ```
 
 **Key properties:**
-- `DIRECTIVES.md` is `chmod 0444` immediately after spawn-time write. File-system-enforced read-only. Tamper attempts (e.g., `chmod` by the agent) are caught by the SHA check in `.directives-lock.json` and logged.
-- `JOURNAL.md` is `chmod 0644`. The agent writes it via atomic tmp-rename (§ 10.3).
+- `DIRECTIVES.md` is written once at spawn via atomic tmp-rename. The writer refuses to overwrite an existing file. The agent's PROTOCOL forbids modification; we do not enforce this at the OS layer (§ 10.4).
+- `JOURNAL.md` is the agent's only writable file. Atomic tmp-rename (§ 10.3).
 - `.agent-events.jsonl` is a symlink in each sub-agent workspace pointing at the shared top-level file. Appends from any agent land in the same jsonl; `tail -f | jq` at the top level sees everything. POSIX `O_APPEND` makes single-line writes atomic up to PIPE_BUF (≥512 bytes); cap `PRE_COMPRESSION_SNAPSHOT` payloads at 400 bytes to stay under.
-- `SERVICES.md` is readable to every agent (symlink into sub-agent workspaces). Writes go through the parent at seal time — children never append directly.
+- `INVENTORY.md` is readable to every agent (symlink into sub-agent workspaces). Writes go through the parent at seal time — children never append directly.
 
 ---
 
@@ -1924,15 +1898,14 @@ Long-horizon agents idle between turns (waiting for a verifier to run, for a sub
 
 **Tasks:**
 - Scaffold `extensions/directive-persistence/` with TypeScript + vitest.
-- `schema.ts`: zod schemas for DIRECTIVES (immutable), JOURNAL (mutable), PLAN, stage, SERVICES, event log entries. Separate schemas per file — no shared "zone" enum.
+- `schema.ts`: zod schemas for DIRECTIVES (immutable), JOURNAL (mutable), PLAN, stage, INVENTORY, event log entries. Separate schemas per file — no shared "zone" enum.
 - `directives/parse.ts`: typed parser for DIRECTIVES.md. Throws `DirectivesParseError` with line/column on malformed.
 - `directives/journal.ts`: typed parser + atomic writer for JOURNAL.md.
-- `directives/tamper.ts`: SHA-based integrity check against `.directives-lock.json`. Emits `AGENT:DIRECTIVES_TAMPER_ATTEMPT`.
 - `directives/inject.ts`: `buildLiveStateInjection(journal)` — produces the exact ~150-token block in § 6.6. Byte-stable template with only JOURNAL-derived fields changing.
-- `spawn/write-directives.ts`: atomic write → `chmod 0444` → record SHA/size/ts to `.directives-lock.json`. Also builds `extraSystemPrompt` payload from DIRECTIVES content for the parent to pass to `sessions_spawn`.
+- `spawn/write-directives.ts`: atomic write (tmp + fsync + rename + dir-fsync) that refuses to overwrite an existing DIRECTIVES.md. Also builds `extraSystemPrompt` payload from DIRECTIVES content for the parent to pass to `sessions_spawn`.
 - `events/log.ts`: `O_APPEND | O_CREAT` writer with per-line fsync and ≤400B snapshot cap.
-- Hook registration (`index.ts`): `before_prompt_build` (no-op when JOURNAL absent; reads JOURNAL + SHA-checks DIRECTIVES), `before_compaction` (JOURNAL snapshot), `after_compaction` (`COMPRESSION_EVENT`).
-- Unit tests: DIRECTIVES parse round-trip; JOURNAL parse/write round-trip; atomic write crash recovery (kill mid-write → prior file intact); tamper detector (flip one byte → SHA mismatch → event emitted); `chmod 0444` is honored by the write helper (refuses second write).
+- Hook registration (`index.ts`): `before_prompt_build` (no-op when JOURNAL absent; reads JOURNAL and builds the LIVE STATE injection), `before_compaction` (JOURNAL snapshot), `after_compaction` (`COMPRESSION_EVENT`).
+- Unit tests: DIRECTIVES parse round-trip; JOURNAL parse/write round-trip; atomic write crash recovery (kill mid-write → prior file intact); write-once enforcement (second `writeDirectives` call to the same path returns an error and leaves the original intact).
 - Integration: load plugin into local OpenClaw; run two sessions — one with DIRECTIVES+JOURNAL, one without. Confirm:
   - Non-directive session: zero behavior change.
   - Directive session: DIRECTIVES content appears in the cached system prompt (verify via `prompt-cache-observability`), LIVE STATE injection appears after the cache boundary every turn, cache hit rate stays ≥90% across a 20-turn scripted run.
@@ -1950,15 +1923,15 @@ Long-horizon agents idle between turns (waiting for a verifier to run, for a sub
   - Agent stays on step 2, writes failure to JOURNAL WORKING NOTES.
   - After 3 failures, `AGENT:STUCK_WARNING` emits and the agent reports BLOCKED.
 
-### Phase 3 — PLAN + stage + SERVICES layer
+### Phase 3 — PLAN + stage + INVENTORY layer
 
-- `plan/plan.ts`, `plan/stage.ts`, `services/registry.ts`.
+- `plan/plan.ts`, `plan/stage.ts`, `inventory/registry.ts`.
 - `plan/seal.ts`: stage sealing orchestration (runs DoD, publishes service cards, updates PLAN.md registry, atomic).
 - `AGENT:STAGE_ACTIVATED`, `AGENT:STAGE_SEALED`, `AGENT:PLAN_BOOTSTRAPPED` events.
 - Tests:
   - 3-stage plan; agent advances 1→2→3 with seal gates.
   - REPLAN protocol: PENDING editable, ACTIVE rejected, SEALED rejected.
-  - Service registry lookup: a second agent that would duplicate an existing service gets redirected by the pre-spawn reuse check.
+  - Inventory lookup: a second agent that would duplicate an existing service gets redirected by the pre-spawn reuse check.
 
 ### Phase 4 — Sub-agent recursion
 
@@ -2002,13 +1975,13 @@ Long-horizon agents idle between turns (waiting for a verifier to run, for a sub
 
 1. **Cross-agent write collision on `.agent-events.jsonl`.** POSIX `O_APPEND` guarantees atomicity up to PIPE_BUF (≥512 on Linux). A single JSON event line is typically ~300B but can exceed PIPE_BUF for large events (`PRE_COMPRESSION_SNAPSHOT` with a long progress string). **Mitigation:** cap the `snapshot` field size at 400 bytes; use the `session_file` pointer for anything larger.
 
-2. **Service card generation from sealed outputs.** Who writes `services/<name>.md`? Two options: (a) the sub-agent writes it as part of its OUTPUT CONTRACT; (b) the parent writes it at seal time. **Decision:** parent writes, because the parent is the one that verifies; sub-agent's claim about its own interface can't be trusted for the registry. Sub-agent proposes via a `service_card:` block in its TASK_COMPLETE; parent reviews and commits.
+2. **Service card generation from sealed outputs.** Who writes `inventory/<name>.md`? Two options: (a) the sub-agent writes it as part of its OUTPUT CONTRACT; (b) the parent writes it at seal time. **Decision:** parent writes, because the parent is the one that verifies; sub-agent's claim about its own interface can't be trusted for the registry. Sub-agent proposes via a `service_card:` block in its TASK_COMPLETE; parent reviews and commits.
 
 3. **Parent re-verification cost.** Parent running `runAllDoD` on every child completion doubles verifier runtime. For cheap checks (file_exists, grep) this is fine; for `test_passes` on a full suite it's wasteful. **Decision:** parent re-runs only the verifiers whose outcomes can't be cryptographically established from git state (i.e., skip `file_exists` / `grep` re-runs if the file's git SHA matches the child's report; always re-run `shell_exit_zero` / `http_status` / `test_passes`).
 
 4. **REPLAN mid-ACTIVE stage.** Currently option B (abort children, mark ABANDONED) is clean but wasteful. Option A (wait for natural completion) is cheaper but slow. **Decision pending:** default to Option B but allow a `replan_mode: "wait"` flag in REPLAN for non-urgent replans.
 
-5. **Sub-sub-agent service registry.** Does a sub-sub-agent see the full `SERVICES.md` or only services relevant to its ancestors' scope? **Leaning:** full registry is fine — reading is safe, writing is parent-mediated. DRY prevention benefits from wide visibility.
+5. **Sub-sub-agent inventory.** Does a sub-sub-agent see the full `INVENTORY.md` or only services relevant to its ancestors' scope? **Leaning:** full registry is fine — reading is safe, writing is parent-mediated. DRY prevention benefits from wide visibility.
 
 ---
 
@@ -2022,7 +1995,7 @@ The system's central claim — *agents stay coherent through N compactions and d
 |-------|-------------------------------|
 | 1 — Foundation | Synthetic 5-stage smoke project completes end-to-end. ≥90% cache hit rate. |
 | 2 — Verifier runner | Synthetic: all 12 verifier types exercised; `journal.write_done` preconditions enforced; `AGENT:JOURNAL_DONE_REVERTED` fires on bash-echo bypass. |
-| 3 — PLAN + SERVICES | Synthetic 10-stage project with 2 sub-agent DRY-collisions; SERVICES.md pre-flight catches both; 0 duplicated implementations. |
+| 3 — PLAN + INVENTORY | Synthetic 10-stage project with 2 sub-agent DRY-collisions; INVENTORY.md pre-flight catches both; 0 duplicated implementations. |
 | 4 — Sub-agent recursion | Synthetic 3-stage project with parallel sub-agents; progressive-granularity retry demonstrated on an intentionally-too-coarse sub-task. |
 | 5 — Observability + verifier libraries | SWE-Bench Verified lite run (50 issues): measurable reduction in false-positive "done" claims vs. a baseline agent with same model. Verifier library templates exercised. |
 | 6 — Hardening + HCAST gate | See § 17.2. |
@@ -2045,7 +2018,7 @@ The magnitude of claimed wins scales with time horizon — precisely because tha
 
 ### 17.3 Secondary benchmarks
 
-- **TheAgentCompany.** Multi-stage + shared resources. Best-of-field ~30% (2024). Target: ≥45% for 1.0. Directly tests main-agent orchestration and SERVICES.md DRY prevention.
+- **TheAgentCompany.** Multi-stage + shared resources. Best-of-field ~30% (2024). Target: ≥45% for 1.0. Directly tests main-agent orchestration and INVENTORY.md DRY prevention.
 - **SWE-Bench Verified / Pro.** Primarily a variance-reduction test for us: same peak as baseline, much tighter variance across runs, driven by the verifier gate preventing false-positive "done."
 - **MLE-bench.** Depends on quality of the `mle-bench.ts` verifier library. Target for 1.0: top-quartile on 10 representative competitions.
 
@@ -2060,7 +2033,7 @@ Before public benchmarks, validate mechanism-by-mechanism on a controlled synthe
 | Mean compactions per sealed stage | bounded (not superlinear in project length) | Main agent resilience |
 | Cache hit rate, system tokens | ≥90% across 1000+ turns | DIRECTIVES/JOURNAL split works |
 | Main JOURNAL size at stage 50 | <10 KB | Seal-and-archive works |
-| DRY violations | 0 | SERVICES.md pre-flight works |
+| DRY violations | 0 | INVENTORY.md pre-flight works |
 | Parent re-prompt rate | <10% of TASK_COMPLETE calls | Children self-verify honestly |
 | Mean turns between STUCK_WARNING | >200 | Sustained progress |
 | `AGENT:JOURNAL_DONE_REVERTED` events (planted-bypass test) | reverts caught, progress resumes | Write-authority works |
@@ -2068,7 +2041,7 @@ Before public benchmarks, validate mechanism-by-mechanism on a controlled synthe
 Then **ablate and re-run** to attribute each metric to its mechanism:
 
 - Turn off the `after_turn` revert validator → DONE DONE accuracy drops.
-- Turn off SERVICES.md pre-flight → DRY violations appear.
+- Turn off INVENTORY.md pre-flight → DRY violations appear.
 - Turn off seal-and-archive → main JOURNAL grows unboundedly.
 - Turn off progressive-granularity retry → parent re-prompt rate spikes.
 - Turn off cache (use `ttl: "5m"` default) → cache hit rate collapses under idle gaps.
@@ -2093,11 +2066,11 @@ No matter what happens — context compression, model swap, session timeout, VM 
 3. It injects: goal, current step, DoD, output contract, constraints, turn budget, protocol.
 4. The agent knows exactly where it is, what to do next, and how it will be checked.
 
-The agent never knows it was compressed. It doesn't need to. It wakes, reads its directives, consults `SERVICES.md`, and continues from exactly where the task stack says it is. `DIRECTIVES.md` is the agent's memory. Everything in the context window is ephemeral.
+The agent never knows it was compressed. It doesn't need to. It wakes, reads its directives, consults `INVENTORY.md`, and continues from exactly where the task stack says it is. `DIRECTIVES.md` is the agent's memory. Everything in the context window is ephemeral.
 
 Meanwhile, the observer log gives Logan a complete external view: which agents ran, when they compressed, whether they advanced or got stuck, what they produced, what they reused, what they spent. Two audiences, two files, zero overlap.
 
-The context window is ephemeral. The files are permanent. Compression is a recoverable non-event. Premature DONE is structurally impossible because the verifier runner is the only path to the DONE state. DRY is structurally discouraged because `SERVICES.md` is the mandatory first read.
+The context window is ephemeral. The files are permanent. Compression is a recoverable non-event. Premature DONE is structurally impossible because the verifier runner is the only path to the DONE state. DRY is structurally discouraged because `INVENTORY.md` is the mandatory first read.
 
 **The agent runs until every DoD is verified PASS. No early stopping. No skipping because it's hard. No planning for weeks. No rebuilding what already exists. Just micro-tasks, black-box contracts, and a file that tells the agent exactly what to do next, every single turn, forever.**
 
