@@ -35,7 +35,8 @@ Secondary targets: TheAgentCompany (multi-agent coordination), MLE-bench (multi-
 
 ## Where to read next
 
-- **Design spec:** [BUILD.md](./BUILD.md) — the whole architecture, load-bearing for every implementation decision.
+- **[docs/AGENTS.md](./docs/AGENTS.md)** ← **Start here if you are an AI agent.** Complete reference: all invariants, file schemas, step lifecycle diagrams, TASK_COMPLETE protocol, sub-agent spawning, verifier types, decision trees for every common situation. Written to make any agent an instant expert.
+- **Design spec:** [BUILD.md](./BUILD.md) — the full architecture, authoritative for every implementation decision.
 - **Activation model:** [docs/activation.md](./docs/activation.md) — how to turn the system on for a session.
 - **Design principles:** [BUILD.md § 2](./BUILD.md#2-design-principles-invariants-every-section-upholds) — 14 invariants every mechanism upholds.
 - **Roadmap:** [BUILD.md § 15](./BUILD.md#15-implementation-roadmap) — Phases 1-6, tracked as GitHub milestones.
