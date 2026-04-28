@@ -61,7 +61,10 @@ but the immediate implementation should not block on Anthropic-specific APIs.
       entries, 154,180 total tokens, 669.98s wall time.
 - [x] Re-run package gates after GPT-5 scaling changes: TypeScript no-emit,
       vitest, build, 3-stage smoke, and planted-defect comparison all pass.
-- [ ] Add HCAST adapter that emits `PLAN.md`, `DIRECTIVES.md`, and stage files.
+- [x] Add HCAST/METR Task Standard adapter that emits `PLAN.md`,
+      `DIRECTIVES.md`, `JOURNAL.md`, `INVENTORY.md`, stage files, and
+      benchmark metadata while keeping official scoring external by default.
+- [ ] Run the HCAST adapter against a real Task Bridge task environment.
 - [x] Run baseline same-model agent and InfiniClaw agent on the synthetic bench.
 - [x] Scale synthetic same-model comparison to 50 stages and capture token and
       latency metrics before public benchmark attempts.
@@ -104,9 +107,10 @@ but the immediate implementation should not block on Anthropic-specific APIs.
 
 - OpenClaw tool registration is implemented through a small SDK-adapter layer,
   but still needs validation against the real OpenClaw plugin SDK surface.
-- `bench/` has synthetic smoke, deterministic comparison, live model smoke, and
-  same-model model comparison runners; public benchmark adapters are still
-  pending.
+- `bench/` has synthetic smoke, deterministic comparison, live model smoke,
+  same-model model comparison runners, and an initial HCAST/METR Task Standard
+  workspace adapter. It still needs execution against the official Task Bridge
+  environment.
 - Root scripts assume a `pnpm` command is on PATH; local fallback currently uses
   `corepack pnpm` or direct binaries.
 - Prompt-cache behavior is still validated only by design/tests, not by a

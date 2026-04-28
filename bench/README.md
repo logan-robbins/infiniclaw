@@ -31,4 +31,7 @@ Run the 50-stage REST framework synthetic, then ablate each mechanism individual
 
 ## Status
 
-Synthetic fixture generation exists under `synthetic/fifty-stage-rest`. Public benchmark adapters are still pending.
+Synthetic fixture generation exists under `synthetic/fifty-stage-rest`. The
+first METR Task Standard/HCAST-style workspace adapter exists under
+`adapters/hcast`; real benchmark scoring still needs to be run through the
+official task environment/bridge.
