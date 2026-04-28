@@ -4,7 +4,7 @@ The core OpenClaw plugin for the Persistent Directive System.
 
 Full design: see [../../BUILD.md](../../BUILD.md) at repo root.
 
-## What this package does (once Phase 1 ships)
+## What this package does
 
 - Registers OpenClaw hooks (`before_prompt_build`, `before_compaction`, `after_compaction`, `after_turn`) that implement the DIRECTIVES/JOURNAL split.
 - Registers plugin tools (`verifier.run`, `journal.*`, `report_task_*`) that are the authoritative paths for state changes.
@@ -36,4 +36,4 @@ __tests__/            # vitest suites
 
 ## Status
 
-Phase 0 stub. Do not install.
+Prototype implementation. Core unit tests pass, but the package still needs validation against the real OpenClaw plugin SDK and benchmark harnesses before release.

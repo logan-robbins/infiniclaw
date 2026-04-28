@@ -16,105 +16,164 @@ export const verifierTypeSchema = z.enum([
   "any_of",
 ]);
 
-type RecursiveVerifierInput = z.infer<typeof baseVerifierSchema> & {
-  checks?: RecursiveVerifierInput[];
-};
+export type JsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | JsonValue[]
+  | { [key: string]: JsonValue };
 
-const jsonValueSchema: z.ZodType<unknown> = z.lazy(() =>
-  z.union([
-    z.string(),
-    z.number(),
-    z.boolean(),
-    z.null(),
-    z.array(jsonValueSchema),
-    z.record(jsonValueSchema),
-  ]),
+export type Verifier =
+  | { type: "file_exists"; path: string }
+  | { type: "file_absent"; path: string }
+  | {
+      type: "shell_exit_zero";
+      cmd: string;
+      cwd?: string;
+      timeout_s?: number;
+    }
+  | {
+      type: "shell_exit_nonzero";
+      cmd: string;
+      cwd?: string;
+      timeout_s?: number;
+    }
+  | {
+      type: "http_status";
+      url: string;
+      method?: string;
+      headers?: Record<string, string>;
+      body_json?: JsonValue;
+      status: number;
+      expect_json?: JsonValue;
+      timeout_s?: number;
+    }
+  | {
+      type: "grep_present";
+      path: string;
+      pattern: string;
+      flags?: string;
+    }
+  | {
+      type: "grep_absent";
+      path: string;
+      pattern: string;
+      flags?: string;
+    }
+  | { type: "test_passes"; cmd: string; timeout_s?: number }
+  | {
+      type: "json_schema_match";
+      path?: string;
+      cmd?: string;
+      schema: JsonValue;
+    }
+  | { type: "fs_size_under"; path: string; max_bytes: number }
+  | {
+      type: "llm_judge";
+      rubric_path?: string;
+      rubric?: string;
+      inputs: JsonValue[];
+      min_score: number;
+      judge_model?: string;
+      seed?: number;
+    }
+  | { type: "all_of"; checks: Verifier[] }
+  | { type: "any_of"; checks: Verifier[] };
+
+const jsonValueSchema: z.ZodType<JsonValue> = z.lazy(
+  () =>
+    z.union([
+      z.string(),
+      z.number(),
+      z.boolean(),
+      z.null(),
+      z.array(jsonValueSchema),
+      z.record(jsonValueSchema),
+    ]) as z.ZodType<JsonValue>,
 );
 
-const baseVerifierSchema = z.object({
-  type: verifierTypeSchema,
-});
-
-export const verifierSchema: z.ZodType<RecursiveVerifierInput> = z.lazy(() =>
-  z.union([
-    z.object({ type: z.literal("file_exists"), path: z.string().min(1) }),
-    z.object({ type: z.literal("file_absent"), path: z.string().min(1) }),
-    z.object({
-      type: z.literal("shell_exit_zero"),
-      cmd: z.string().min(1),
-      cwd: z.string().min(1).optional(),
-      timeout_s: z.number().int().positive().optional(),
-    }),
-    z.object({
-      type: z.literal("shell_exit_nonzero"),
-      cmd: z.string().min(1),
-      cwd: z.string().min(1).optional(),
-      timeout_s: z.number().int().positive().optional(),
-    }),
-    z.object({
-      type: z.literal("http_status"),
-      url: z.string().min(1),
-      method: z.string().min(1).optional(),
-      headers: z.record(z.string()).optional(),
-      body_json: jsonValueSchema.optional(),
-      status: z.number().int(),
-      expect_json: jsonValueSchema.optional(),
-      timeout_s: z.number().int().positive().optional(),
-    }),
-    z.object({
-      type: z.literal("grep_present"),
-      path: z.string().min(1),
-      pattern: z.string().min(1),
-      flags: z.string().optional(),
-    }),
-    z.object({
-      type: z.literal("grep_absent"),
-      path: z.string().min(1),
-      pattern: z.string().min(1),
-      flags: z.string().optional(),
-    }),
-    z.object({
-      type: z.literal("test_passes"),
-      cmd: z.string().min(1),
-      timeout_s: z.number().int().positive().optional(),
-    }),
-    z
-      .object({
-        type: z.literal("json_schema_match"),
-        path: z.string().min(1).optional(),
-        cmd: z.string().min(1).optional(),
-        schema: jsonValueSchema,
-      })
-      .refine((value) => value.path || value.cmd, {
-        message: "json_schema_match requires path or cmd",
+export const verifierSchema: z.ZodType<Verifier> = z.lazy(
+  () =>
+    z.union([
+      z.object({ type: z.literal("file_exists"), path: z.string().min(1) }),
+      z.object({ type: z.literal("file_absent"), path: z.string().min(1) }),
+      z.object({
+        type: z.literal("shell_exit_zero"),
+        cmd: z.string().min(1),
+        cwd: z.string().min(1).optional(),
+        timeout_s: z.number().int().positive().optional(),
       }),
-    z.object({
-      type: z.literal("fs_size_under"),
-      path: z.string().min(1),
-      max_bytes: z.number().int().nonnegative(),
-    }),
-    z
-      .object({
-        type: z.literal("llm_judge"),
-        rubric_path: z.string().min(1).optional(),
-        rubric: z.string().min(1).optional(),
-        inputs: z.array(jsonValueSchema),
-        min_score: z.number(),
-        judge_model: z.string().min(1).optional(),
-        seed: z.number().int().optional(),
-      })
-      .refine((value) => value.rubric_path || value.rubric, {
-        message: "llm_judge requires rubric_path or rubric",
+      z.object({
+        type: z.literal("shell_exit_nonzero"),
+        cmd: z.string().min(1),
+        cwd: z.string().min(1).optional(),
+        timeout_s: z.number().int().positive().optional(),
       }),
-    z.object({
-      type: z.literal("all_of"),
-      checks: z.array(verifierSchema).min(1),
-    }),
-    z.object({
-      type: z.literal("any_of"),
-      checks: z.array(verifierSchema).min(1),
-    }),
-  ]),
+      z.object({
+        type: z.literal("http_status"),
+        url: z.string().min(1),
+        method: z.string().min(1).optional(),
+        headers: z.record(z.string()).optional(),
+        body_json: jsonValueSchema.optional(),
+        status: z.number().int(),
+        expect_json: jsonValueSchema.optional(),
+        timeout_s: z.number().int().positive().optional(),
+      }),
+      z.object({
+        type: z.literal("grep_present"),
+        path: z.string().min(1),
+        pattern: z.string().min(1),
+        flags: z.string().optional(),
+      }),
+      z.object({
+        type: z.literal("grep_absent"),
+        path: z.string().min(1),
+        pattern: z.string().min(1),
+        flags: z.string().optional(),
+      }),
+      z.object({
+        type: z.literal("test_passes"),
+        cmd: z.string().min(1),
+        timeout_s: z.number().int().positive().optional(),
+      }),
+      z
+        .object({
+          type: z.literal("json_schema_match"),
+          path: z.string().min(1).optional(),
+          cmd: z.string().min(1).optional(),
+          schema: jsonValueSchema,
+        })
+        .refine((value) => value.path || value.cmd, {
+          message: "json_schema_match requires path or cmd",
+        }),
+      z.object({
+        type: z.literal("fs_size_under"),
+        path: z.string().min(1),
+        max_bytes: z.number().int().nonnegative(),
+      }),
+      z
+        .object({
+          type: z.literal("llm_judge"),
+          rubric_path: z.string().min(1).optional(),
+          rubric: z.string().min(1).optional(),
+          inputs: z.array(jsonValueSchema),
+          min_score: z.number(),
+          judge_model: z.string().min(1).optional(),
+          seed: z.number().int().optional(),
+        })
+        .refine((value) => value.rubric_path || value.rubric, {
+          message: "llm_judge requires rubric_path or rubric",
+        }),
+      z.object({
+        type: z.literal("all_of"),
+        checks: z.array(verifierSchema).min(1),
+      }),
+      z.object({
+        type: z.literal("any_of"),
+        checks: z.array(verifierSchema).min(1),
+      }),
+    ]) as unknown as z.ZodType<Verifier>,
 );
 
 export const turnBudgetSchema = z.object({
@@ -288,7 +347,6 @@ export const eventSchema = z
   })
   .and(z.record(z.unknown()));
 
-export type Verifier = z.infer<typeof verifierSchema>;
 export type Directives = z.infer<typeof directivesSchema>;
 export type Journal = z.infer<typeof journalSchema>;
 export type JournalStep = z.infer<typeof journalStepSchema>;

@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import type { AgentEvent, Verifier } from "../directives/schema.js";
 import { appendEvent } from "../events/log.js";
+import { createEnvLlmJudge } from "../providers/openai-compatible.js";
 import {
   recordVerifierRun,
   type VerifierRunRecord,
@@ -41,6 +42,9 @@ export async function runVerifier(
   verifier: Verifier,
   ctx: VerifierContext,
 ): Promise<VerifierResult> {
+  const verifierCtx = containsLlmJudge(verifier)
+    ? withConfiguredLlmJudge(ctx)
+    : ctx;
   switch (verifier.type) {
     case "file_exists":
       return verifyFileExists(verifier as Verifier & { type: "file_exists"; path: string }, ctx);
@@ -106,18 +110,18 @@ export async function runVerifier(
           judge_model?: string;
           seed?: number;
         },
-        ctx,
+        verifierCtx,
       );
     case "all_of":
       return verifyAllOf(
         verifier as Verifier & { type: "all_of"; checks: Verifier[] },
-        ctx,
+        verifierCtx,
         runVerifier,
       );
     case "any_of":
       return verifyAnyOf(
         verifier as Verifier & { type: "any_of"; checks: Verifier[] },
-        ctx,
+        verifierCtx,
         runVerifier,
       );
   }
@@ -128,8 +132,11 @@ export async function runAllDoD(
   ctx: VerifierContext,
 ): Promise<RunAllDoDResult> {
   const results: RunAllDoDResult["results"] = [];
+  const verifierCtx = dod.some((verifier) => containsLlmJudge(verifier))
+    ? withConfiguredLlmJudge(ctx)
+    : ctx;
   for (const verifier of dod) {
-    results.push({ verifier, result: await runVerifier(verifier, ctx) });
+    results.push({ verifier, result: await runVerifier(verifier, verifierCtx) });
   }
   return {
     allPass: results.every(({ result }) => result.pass),
@@ -252,4 +259,18 @@ function stableStringify(value: unknown): string {
       .join(",")}}`;
   }
   return JSON.stringify(value);
+}
+
+function withConfiguredLlmJudge(ctx: VerifierContext): VerifierContext {
+  if (ctx.llmJudge) return ctx;
+  const llmJudge = createEnvLlmJudge();
+  return llmJudge ? { ...ctx, llmJudge } : ctx;
+}
+
+function containsLlmJudge(verifier: Verifier): boolean {
+  if (verifier.type === "llm_judge") return true;
+  if (verifier.type === "all_of" || verifier.type === "any_of") {
+    return verifier.checks.some(containsLlmJudge);
+  }
+  return false;
 }

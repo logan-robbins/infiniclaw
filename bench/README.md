@@ -31,4 +31,4 @@ Run the 50-stage REST framework synthetic, then ablate each mechanism individual
 
 ## Status
 
-Phase 0 stub. No adapters implemented.
+Synthetic fixture generation exists under `synthetic/fifty-stage-rest`. Public benchmark adapters are still pending.

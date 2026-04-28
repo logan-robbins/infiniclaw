@@ -6,7 +6,7 @@
 
 ## Status
 
-**Design-complete, pre-implementation.** The architecture is specified in full at [BUILD.md](./BUILD.md) (~2100 lines). Phase 1 implementation tracks the roadmap in § 15.
+**Prototype implementation in progress.** Core directive persistence, verifier authority, plan/inventory sealing, sub-agent helpers, provider-backed `llm_judge`, plugin tool registration, and a synthetic fixture generator are implemented and tested. Public benchmark adapters are still pending; see [docs/gap-fix-plan.md](./docs/gap-fix-plan.md).
 
 ## What this is
 
@@ -59,7 +59,7 @@ infiniclaw/
 
 ## Contributing
 
-This is a single-author research project during Phase 0. Contributions welcome once Phase 1 ships a working plugin skeleton — track issues under the **Phase 1 — Foundation** milestone.
+This is a single-author research project moving from prototype to benchmark validation. The next major milestones are real OpenClaw SDK validation, synthetic long-run attribution, and HCAST adapter work.
 
 ## License
 

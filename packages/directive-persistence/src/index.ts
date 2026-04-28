@@ -10,6 +10,19 @@ import {
   drainNudges,
   runAfterTurn,
 } from "./supervision/done-revert.js";
+import { registerTools, type ToolSdk } from "./tools/register.js";
+export {
+  createEnvLlmJudge,
+  createEnvChatModel,
+  createOpenAICompatibleChatModel,
+  createOpenAICompatibleLlmJudge,
+  resolveOpenAICompatibleConfig,
+  type ChatCompletionInput,
+  type ChatCompletionResult,
+  type OpenAICompatibleConfig,
+  type OpenAICompatibleProvider,
+} from "./providers/openai-compatible.js";
+export { buildTools, registerTools, type PluginTool } from "./tools/register.js";
 
 export const PLUGIN_NAME = "directive-persistence";
 export const PLUGIN_VERSION = "0.3.0-phase5";
@@ -32,7 +45,7 @@ export type BeforePromptBuildResult = {
 export type PluginSdk = {
   registerHook?: (name: string, handler: (...args: any[]) => unknown) => void;
   on?: (name: string, handler: (...args: any[]) => unknown) => void;
-};
+} & ToolSdk;
 
 type BeforeCompactionMetrics = {
   messageCount: number;
@@ -50,12 +63,13 @@ type AfterCompactionMetrics = {
 export function register(sdk?: PluginSdk): void {
   if (!sdk) return;
   const on = sdk.on ?? sdk.registerHook;
-  if (!on) return;
-
-  on("before_prompt_build", beforePromptBuild);
-  on("before_compaction", beforeCompaction);
-  on("after_compaction", afterCompaction);
-  on("after_turn", afterTurn);
+  if (on) {
+    on("before_prompt_build", beforePromptBuild);
+    on("before_compaction", beforeCompaction);
+    on("after_compaction", afterCompaction);
+    on("after_turn", afterTurn);
+  }
+  registerTools(sdk);
 }
 
 export async function beforePromptBuild(

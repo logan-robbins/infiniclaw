@@ -1,8 +1,8 @@
-import type { Verifier } from "../../directives/schema.js";
+import type { JsonValue, Verifier } from "../../directives/schema.js";
 
 export type MleBenchSpec = {
   submissionFile: string;
-  submissionSchema: unknown;
+  submissionSchema: JsonValue;
   submissionCmd: string;
   metricCmd: string;
   metricThreshold: number;
