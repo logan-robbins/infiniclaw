@@ -17,20 +17,23 @@ const workDir = path.resolve(
 );
 const model = args.model ?? "openai/gpt-5-mini";
 const seed = positiveInteger(args.seed ?? "1", "--seed");
-const maxTurns = positiveInteger(args.maxTurns ?? "12", "--max-turns");
+const fullRun = Boolean(args.full);
+const maxTurns = fullRun ? undefined : positiveInteger(args.maxTurns ?? "12", "--max-turns");
 const configFile = "infiniclaw-yc-bench.toml";
 const configPath = path.join(workDir, configFile);
 const timeoutMs = positiveInteger(args.timeoutMs ?? "900000", "--timeout-ms");
 
 await preflight();
 await mkdir(workDir, { recursive: true });
-await execFileAsync(process.execPath, [
+const generateArgs = [
   path.join(here, "generate-config.mjs"),
   "--out",
   configPath,
-  "--max-turns",
-  String(maxTurns),
-]);
+];
+if (maxTurns !== undefined) {
+  generateArgs.push("--max-turns", String(maxTurns));
+}
+await execFileAsync(process.execPath, generateArgs);
 
 const childEnv = {
   ...process.env,
@@ -110,7 +113,7 @@ async function summarizeRun(processResult) {
     yc_bench_dir: ycBenchDir,
     model,
     seed,
-    max_turns: maxTurns,
+    max_turns: maxTurns ?? null,
     process_exit_code: processResult.exitCode,
     terminal_reason: rollout?.terminal_reason ?? null,
     terminal_detail: rollout?.terminal_detail ?? null,
@@ -230,9 +233,15 @@ function parseArgs(argv) {
       continue;
     }
     if (arg === "--max-turns") {
+      if (parsed.full) throw new Error("--max-turns cannot be used with --full");
       if (!value) throw new Error("--max-turns requires a value");
       parsed.maxTurns = value;
       index += 1;
+      continue;
+    }
+    if (arg === "--full") {
+      if (parsed.maxTurns) throw new Error("--full cannot be used with --max-turns");
+      parsed.full = true;
       continue;
     }
     if (arg === "--timeout-ms") {

@@ -38,6 +38,9 @@ node bench/adapters/yc-bench/run-smoke.mjs \
 wrapper treats a generated rollout with `max_turns` terminal detail as a valid
 smoke result.
 
+Use the same wrapper for a full one-seed run by replacing `--max-turns N` with
+`--full`.
+
 Latest local GPT-5-mini smoke:
 
 - `seed=1`, `max_turns=18`, `model=openai/gpt-5-mini`
@@ -79,12 +82,13 @@ node bench/adapters/yc-bench/generate-config.mjs \
   --out "$RUN_DIR/infiniclaw-yc-bench.toml"
 
 for SEED in 1 2 3; do
-  (cd "$RUN_DIR" && \
-    uv run --project /tmp/yc-bench yc-bench run \
-      --model openai/gpt-5-mini \
-      --seed "$SEED" \
-      --config infiniclaw-yc-bench.toml \
-      --no-live)
+  node bench/adapters/yc-bench/run-smoke.mjs \
+    --yc-bench-dir /tmp/yc-bench \
+    --env-file /home/azureuser/.openclaw/.env \
+    --work-dir "$RUN_DIR/seed-$SEED" \
+    --model openai/gpt-5-mini \
+    --seed "$SEED" \
+    --full
 done
 ```
 
