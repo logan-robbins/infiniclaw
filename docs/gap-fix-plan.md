@@ -12,14 +12,13 @@ strong doer model.
 
 ## Current Decision
 
-Use `gpt-5-mini` with low reasoning effort when the goal is balanced
-cost/performance, and use `gpt-5-nano` with low reasoning effort for cheaper
-same-model attribution runs where the mechanism needs room to show lift. Keep
-the generic OpenAI-compatible provider layer and make Kimi selectable through
-the `kimi` preset, but treat live Kimi runs as blocked until Moonshot
-quota/balance is available. OpenAI-compatible custom providers remain available
-for cheaper local/proxy experiments. Anthropic remains a target runtime path,
-but the immediate implementation should not block on Anthropic-specific APIs.
+Use YC-Bench as the first real leaderboard target because it directly measures
+long-horizon coherence, context truncation, and persistent scratchpad quality.
+Use `gpt-5-mini` for balanced cost/performance smoke and one-seed trials, and
+use Kimi K2.6 through LiteLLM model `moonshot/kimi-k2.6` only after Moonshot
+quota/balance is available. Keep HCAST/METR Task Standard as the Task Bridge
+north-star path, but treat local HCAST execution as blocked until Docker is
+available.
 
 ## Progress
 
@@ -64,7 +63,19 @@ but the immediate implementation should not block on Anthropic-specific APIs.
 - [x] Add HCAST/METR Task Standard adapter that emits `PLAN.md`,
       `DIRECTIVES.md`, `JOURNAL.md`, `INVENTORY.md`, stage files, and
       benchmark metadata while keeping official scoring external by default.
+- [x] Select YC-Bench as first real leaderboard target: public, long-horizon,
+      scratchpad-based, and already ranking Kimi K2.6.
+- [x] Add YC-Bench adapter that generates an InfiniClaw-style persistent
+      scratchpad system prompt while preserving the official default world
+      mechanics.
+- [x] Run short YC-Bench GPT-5-family smoke with `openai/gpt-5-mini`:
+      4 turns -> structured scratchpad, accepted one task, assigned
+      specialists, stopped by `max_turns`, $0.010231.
+- [x] Run patched YC-Bench smoke after adding post-accept inspection and
+      cancellation workaround: 18 turns -> 2 completed successes, 0 completed
+      failures, 2 planned tasks, final net worth $212,083.26, $0.063273.
 - [ ] Run the HCAST adapter against a real Task Bridge task environment.
+- [ ] Run YC-Bench 3-seed leaderboard-comparable attempt after the smoke passes.
 - [x] Run baseline same-model agent and InfiniClaw agent on the synthetic bench.
 - [x] Scale synthetic same-model comparison to 50 stages and capture token and
       latency metrics before public benchmark attempts.
@@ -98,7 +109,14 @@ but the immediate implementation should not block on Anthropic-specific APIs.
    - Track stages sealed, DONE accuracy, DRY violations, compactions per stage,
      cache-hit behavior, and `JOURNAL.md` size.
 
-5. Add HCAST only after synthetic proof.
+5. Run YC-Bench before HCAST.
+   - Generate `infiniclaw-yc-bench.toml` from `bench/adapters/yc-bench`.
+   - Run a short `openai/gpt-5-mini` smoke on seed 1 with a turn cap.
+   - If the short smoke produces valid command use and scratchpad updates, run
+     the one-year default on seeds 1, 2, and 3.
+   - Try `moonshot/kimi-k2.6` only after Moonshot quota is available.
+
+6. Add HCAST only after synthetic proof and YC-Bench smoke.
    - Adapter translates each task into `PLAN.md`, main `DIRECTIVES.md`, and
      stage files.
    - Compare Kimi baseline versus Kimi+InfiniClaw on 2h and 4h slices first.
@@ -108,9 +126,9 @@ but the immediate implementation should not block on Anthropic-specific APIs.
 - OpenClaw tool registration is implemented through a small SDK-adapter layer,
   but still needs validation against the real OpenClaw plugin SDK surface.
 - `bench/` has synthetic smoke, deterministic comparison, live model smoke,
-  same-model model comparison runners, and an initial HCAST/METR Task Standard
-  workspace adapter. It still needs execution against the official Task Bridge
-  environment.
+  same-model model comparison runners, an initial HCAST/METR Task Standard
+  workspace adapter, and a YC-Bench leaderboard adapter. HCAST still needs
+  execution against the official Task Bridge environment.
 - Root scripts assume a `pnpm` command is on PATH; local fallback currently uses
   `corepack pnpm` or direct binaries.
 - Prompt-cache behavior is still validated only by design/tests, not by a
@@ -121,5 +139,11 @@ but the immediate implementation should not block on Anthropic-specific APIs.
   `gpt-5-nano` on the stricter `api-compute` profile.
 - Kimi provider wiring exists, but live Kimi smoke is currently blocked by
   Moonshot account quota/balance.
+- YC-Bench Kimi K2.6 should use LiteLLM model `moonshot/kimi-k2.6`; OpenAI
+  smokes should use `openai/gpt-5-mini`.
+- The current public YC-Bench checkout throws a SQLAlchemy traceback for
+  `yc-bench task cancel` in the smoke environment, so the prompt treats cancel
+  as unreliable and leaves infeasible post-accept tasks planned/abandoned
+  instead of dispatching them.
 - Anthropic-specific provider support is not implemented; keep it behind the
   OpenClaw runtime integration milestone unless it becomes necessary.
